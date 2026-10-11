@@ -6,6 +6,16 @@ from pydantic import BaseModel, Field
 class IntentClassification(str, Enum):
     INTERESTED = "INTERESTED"
     NOT_INTERESTED = "NOT_INTERESTED"
+    CALLBACK_REQUESTED = "CALLBACK_REQUESTED"
+    NEEDS_INFORMATION = "NEEDS_INFORMATION"
+    UNCERTAIN = "UNCERTAIN"
+
+
+class InterestStrength(str, Enum):
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    UNKNOWN = "UNKNOWN"
 
 
 class StrictClassificationResponse(BaseModel):
@@ -17,7 +27,7 @@ class StrictClassificationResponse(BaseModel):
     """
     classification: IntentClassification = Field(
         ...,
-        description="Must be strictly INTERESTED or NOT_INTERESTED"
+        description="Core intent classification label."
     )
 
 
@@ -45,6 +55,26 @@ class DetailedClassificationResponse(BaseModel):
     total_turns_count: int
     signals_detected: List[str] = Field(default_factory=list)
     is_ambiguous_rescued: bool = False
+    interest_strength: InterestStrength = Field(
+        default=InterestStrength.UNKNOWN,
+        description="Strength of customer buying interest: HIGH, MEDIUM, LOW, or UNKNOWN."
+    )
+    opt_out_detected: bool = Field(
+        default=False,
+        description="True if customer explicitly demanded no-further-contact / DNC / number deletion."
+    )
+    callback_requested: bool = Field(
+        default=False,
+        description="True if customer requested a callback / postpone without rejection."
+    )
+    objection_detected: Optional[str] = Field(
+        default=None,
+        description="Type of objection raised, e.g. 'price' or 'trust', if customer remained engaged."
+    )
+    binary_classification: Optional[str] = Field(
+        default=None,
+        description="Strict two-class projection ('INTERESTED' or 'NOT_INTERESTED') for backward compatibility."
+    )
     turns: Optional[List[Turn]] = None
 
 
@@ -56,6 +86,10 @@ class ClassifyRequest(BaseModel):
     explain: bool = Field(
         default=False,
         description="If true, returns detailed explanation, signals, and turns. If false, returns strict format."
+    )
+    binary: bool = Field(
+        default=True,
+        description="If true in strict mode, projects classification to binary INTERESTED/NOT_INTERESTED."
     )
     industry_context: Optional[str] = Field(
         default=None,
@@ -71,6 +105,10 @@ class BatchClassifyRequest(BaseModel):
     explain: bool = Field(
         default=False,
         description="Whether to include detailed explanations."
+    )
+    binary: bool = Field(
+        default=True,
+        description="Whether to project results to binary classes."
     )
 
 

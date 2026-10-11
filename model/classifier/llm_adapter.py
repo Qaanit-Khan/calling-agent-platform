@@ -1,31 +1,41 @@
 import os
 import json
 from typing import Optional, Dict, Any
-from .models import IntentClassification
+from .models import IntentClassification, InterestStrength
 
-SYSTEM_PROMPT = """You are a Two-Class AI Call Transcript Intent Classifier.
-Your job is to analyze AI sales/support call transcripts and classify customer intent into exactly one of:
-- INTERESTED
-- NOT_INTERESTED
+SYSTEM_PROMPT = """You are a Multilingual AI Call Transcript Customer Intent Classifier.
+You analyze customer utterances across English, Hindi, Marathi, Hinglish, and Marathish to classify customer intent into:
+- INTERESTED: Explicit buying intent, placing orders, requesting discounts/payment links, or affirmative product interest.
+- NOT_INTERESTED: Explicit rejection, indirect refusal ("rehne dijiye", "rahu dya", "no thanks"), wrong number, or opt-out/DNC.
+- CALLBACK_REQUESTED: Asking to call tomorrow, later, in the evening, busy now, driving, or in a meeting without rejection.
+- NEEDS_INFORMATION: Asking exploratory questions about price, mechanism, features, package options, or cheaper alternatives.
+- UNCERTAIN: Hesitation, deliberation ("maybe", "let me think", "sochkar bataunga", "vichar karun sangto", "not sure if interested").
 
 Critical Principles:
-1. Classify CUSTOMER INTENT, NOT CUSTOMER SENTIMENT. Customers can be angry, skeptical, or impatient and still be INTERESTED. Polite customers can reject and be NOT_INTERESTED.
-2. Low threshold for INTERESTED: Any meaningful positive buying/engagement signal, questions about price/workings/benefits, conditional interest ("call me later", "let me think"), skepticism with continued discussion, or WhatsApp details request.
-3. Long conversation (>1 min) or multi-turn engagement without clear rejection -> INTERESTED.
-4. Positive signals override earlier hesitation or soft rejections.
-5. Explicit final rejection ("Nahi chahiye", "I don't need this") -> NOT_INTERESTED.
-6. Explicit do-not-contact / opt-out ("Don't call me again", "Remove my number") -> NOT_INTERESTED (Priority 1, overrides everything).
-7. Wrong person / irrelevant customer -> NOT_INTERESTED.
-8. If transcript is ambiguous, unclear, or noisy with no clear rejection -> INTERESTED.
-9. Empty transcript / immediate disconnect with no evidence of interest -> NOT_INTERESTED.
-10. Differentiate Agent statements from Customer statements. Agent questions do NOT count as customer interest.
+1. CLASSIFY INTENT, NOT SENTIMENT: An angry customer saying "faltu baat band karo pehle price batao" has positive inquiry intent (NEEDS_INFORMATION).
+2. CONTEXTUAL ACKNOWLEDGEMENT: A customer saying "Yes" / "Haan" / "Ho" to an identity verification question ("Am I speaking with Mr. Patil?") is NEUTRAL (UNCERTAIN), NOT product interest. A customer saying "Yes" to "Would you like to know more about this product?" is INTERESTED.
+3. NEGATION & SKEPTICISM:
+   - "I'm interested" -> INTERESTED
+   - "I'm not interested" -> NOT_INTERESTED
+   - "I'm not sure if I'm interested" -> UNCERTAIN
+   - "It's expensive, but I'm interested" -> INTERESTED with price objection
+   - "It's expensive, I don't want it" -> NOT_INTERESTED
+4. PRIORITY 1 OPT-OUT: Explicit do-not-contact / DNC ("Don't call again", "Remove my number", "Punha call karu naka") overrides everything -> NOT_INTERESTED, opt_out_detected: true.
+5. INTEREST STRENGTH:
+   - HIGH: Explicit purchase, order, buy, proceed, discount request, payment link.
+   - MEDIUM: Genuine product interest, questions about price, mechanism, features, requesting WhatsApp details.
+   - LOW: Weak positive signals or callback requests without established product commitment.
+   - UNKNOWN: Rejection, opt-out, bare identity confirmation, or unclassifiable disfluencies.
 
 STRICT OUTPUT FORMAT:
 Return strictly a valid JSON object:
-{"classification": "INTERESTED"}
-or
-{"classification": "NOT_INTERESTED"}
-Do not output anything else.
+{
+  "classification": "INTERESTED",
+  "interest_strength": "HIGH",
+  "opt_out_detected": false,
+  "callback_requested": false,
+  "binary_classification": "INTERESTED"
+}
 """
 
 class LLMClassifierAdapter:
@@ -41,8 +51,8 @@ class LLMClassifierAdapter:
     def is_available(self) -> bool:
         return bool(self.openai_key or self.gemini_key)
 
-    def classify(self, transcript: str) -> Optional[Dict[str, str]]:
-        """Invokes LLM if configured, returns {'classification': '...'} or None."""
+    def classify(self, transcript: str, binary: bool = True) -> Optional[Dict[str, Any]]:
+        """Invokes LLM if configured, returns parsed dict or None."""
         if self.openai_key:
             try:
                 from openai import OpenAI
@@ -58,8 +68,12 @@ class LLMClassifierAdapter:
                 )
                 raw_json = response.choices[0].message.content
                 data = json.loads(raw_json)
-                if data.get("classification") in ["INTERESTED", "NOT_INTERESTED"]:
-                    return {"classification": data["classification"]}
+                if binary:
+                    binary_label = data.get("binary_classification") or (
+                        "INTERESTED" if data.get("classification") in ["INTERESTED", "NEEDS_INFORMATION", "CALLBACK_REQUESTED"] else "NOT_INTERESTED"
+                    )
+                    return {"classification": binary_label}
+                return data
             except Exception:
                 return None
         return None

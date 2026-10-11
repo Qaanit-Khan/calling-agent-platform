@@ -25,15 +25,17 @@ except Exception as e:
 
 from app.models.call import Call, Transcript, TranscriptSegment
 from app.models.lead import Lead, Followup
+from app.models.contact import Contact
 
 logger = logging.getLogger(__name__)
 
 
 class LeadIntelligenceService:
     """
-    Service wrapper for the Two-Class AI Call Transcript Intent Classifier.
+    Service wrapper for the Multilingual AI Call Transcript Intent Classifier.
     Evaluates real customer conversation transcripts across English, Hindi, Hinglish, and Marathi
-    to classify intent into INTERESTED or NOT_INTERESTED with full diagnostic reasoning.
+    to classify intent into INTERESTED, NOT_INTERESTED, CALLBACK_REQUESTED, NEEDS_INFORMATION, UNCERTAIN
+    with interest strength scoring (HIGH, MEDIUM, LOW, UNKNOWN).
     """
 
     def __init__(self):
@@ -59,7 +61,7 @@ class LeadIntelligenceService:
     async def analyze_call(self, session: AsyncSession, call: Call) -> Dict[str, Any]:
         """
         Analyzes a call's full transcript using the IntentClassifier engine
-        and updates the call disposition and lead records accordingly.
+        and updates the call disposition, lead, and contact suppression records.
         """
         transcript_text = self.build_transcript_text(call)
 
@@ -74,6 +76,10 @@ class LeadIntelligenceService:
                 "confidence_score": 0.0,
                 "confidence": 0.0,
                 "classification": "UNCERTAIN",
+                "interest_strength": "UNKNOWN",
+                "opt_out_detected": False,
+                "callback_requested": False,
+                "objection_detected": None,
                 "reasoning": "No transcript turns available to evaluate customer intent.",
                 "rule_applied": "No conversational data",
                 "signals": [],
@@ -85,19 +91,51 @@ class LeadIntelligenceService:
         if self.classifier:
             try:
                 diag: DetailedClassificationResponse = self.classifier.classify_detailed(transcript_text)
-                is_interested = (diag.classification == IntentClassification.INTERESTED)
-                status = "interested" if is_interested else "not_interested"
+                is_interested = (
+                    diag.classification in (IntentClassification.INTERESTED, IntentClassification.NEEDS_INFORMATION)
+                    or diag.binary_classification == "INTERESTED"
+                )
                 confidence = float(diag.confidence)
 
-                # Persist intelligence disposition on call
-                call.disposition = status
+                # Determine disposition and handle opt-out suppression
+                if diag.opt_out_detected:
+                    status = "not_interested"
+                    call.disposition = "not_interested"
+                    # Update Contact record to do_not_call if present
+                    if call.contact_id:
+                        try:
+                            contact_stmt = select(Contact).where(Contact.id == call.contact_id)
+                            c_res = await session.execute(contact_stmt)
+                            contact = c_res.scalar_one_or_none()
+                            if contact:
+                                contact.status = "do_not_call"
+                                session.add(contact)
+                        except Exception as ce:
+                            logger.warning(f"Could not update contact DNC status: {ce}")
+                elif diag.callback_requested:
+                    status = "callback_requested"
+                    call.disposition = "callback_requested"
+                elif is_interested:
+                    status = "interested"
+                    call.disposition = "interested"
+                else:
+                    status = "not_interested"
+                    call.disposition = "not_interested"
+
                 session.add(call)
 
-                # Auto-create or update Lead record if interested
-                if is_interested:
+                # Auto-create or update Lead record if interested and NOT opted-out
+                if is_interested and not diag.opt_out_detected:
                     lead_stmt = select(Lead).where(Lead.call_id == call.id)
                     lead_res = await session.execute(lead_stmt)
                     lead = lead_res.scalar_one_or_none()
+                    lead_metadata = {
+                        "classification": diag.classification.value,
+                        "interest_strength": diag.interest_strength.value,
+                        "objection_detected": diag.objection_detected,
+                        "signals": diag.signals_detected,
+                        "rule_applied": diag.rule_applied,
+                    }
                     if not lead:
                         lead = Lead(
                             tenant_id=call.tenant_id,
@@ -108,12 +146,14 @@ class LeadIntelligenceService:
                             score=confidence,
                             reason=diag.reason,
                             status="interested",
+                            metadata_json=lead_metadata,
                         )
                         session.add(lead)
                     else:
                         lead.score = confidence
                         lead.reason = diag.reason
                         lead.status = "interested"
+                        lead.metadata_json = lead_metadata
 
                 keywords = list(diag.signals_detected) if diag.signals_detected else []
                 if diag.languages_detected:
@@ -143,6 +183,11 @@ class LeadIntelligenceService:
                     "confidence_score": confidence,
                     "confidence": confidence,
                     "classification": diag.classification.value,
+                    "binary_classification": diag.binary_classification or ("interested" if is_interested else "not_interested"),
+                    "interest_strength": diag.interest_strength.value,
+                    "opt_out_detected": diag.opt_out_detected,
+                    "callback_requested": diag.callback_requested,
+                    "objection_detected": diag.objection_detected,
                     "reasoning": diag.reason,
                     "rule_applied": diag.rule_applied,
                     "signals": diag.signals_detected,
