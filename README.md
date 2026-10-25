@@ -1,283 +1,246 @@
-# 📞 ARB SoftTech AI Calling Agent Platform — Client Handover & Setup Guide
+# 📞 ARB SoftTech AI Calling Agent — Step-by-Step Beginner Setup Guide
 
-Welcome to the **Autonomous AI Outbound Calling & Lead Intelligence Platform**! This repository contains the complete full-stack enterprise calling agent powered by **FastAPI**, **React (Vite + TypeScript)**, **Sarvam AI (TTS/STT)**, **VoBiz / Twilio Telephony**, and **Google Gemini (Transcript Intelligence)**.
-
-This document is the **official, end-to-end setup and handover guide** designed so that any client or developer can set up and run this entire platform on their computer from scratch in under 10 minutes.
+Yeh guide ekdum **basic aur step-wise** banayi gayi hai taaki koi bhi client ya naya user apne laptop/PC par is platform ko **Step 1 se Step 14 tak** aasaani se setup aur run kar sake.
 
 ---
 
-## 📑 Table of Contents
+## 📋 Quick Setup Roadmap (Overview)
 
-1. [Architecture & How It Works](#1-architecture--how-it-works)
-2. [Software Prerequisites (Install on Client Laptop)](#2-software-prerequisites-install-on-client-laptop)
-3. [How to Install & Configure Docker Desktop](#3-how-to-install--configure-docker-desktop)
-4. [How to Get Code from GitHub (Client Setup)](#4-how-to-get-code-from-github-client-setup)
-5. [Environment Variables Configuration (.env)](#5-environment-variables-configuration-env)
-6. [Installing Dependencies (Backend & Frontend)](#6-installing-dependencies-backend--frontend)
-7. [Starting the Platform (2 Ways: 1-Click vs Docker)](#7-starting-the-platform-2-ways-1-click-vs-docker)
-8. [Verifying Setup & Testing a Live Call](#8-verifying-setup--testing-a-live-call)
-9. [Troubleshooting & FAQs](#9-troubleshooting--faqs)
+1. **Phase 1**: Required Software Install Karna (Git, Python, Node.js, Ngrok, Docker)
+2. **Phase 2**: GitHub se Project Download (Clone) Karna
+3. **Phase 3**: API Keys aur `.env` File Setup Karna
+4. **Phase 4**: Packages Install Karna (Backend & Frontend)
+5. **Phase 5**: 1-Click Launch (`start_all.bat`)
+6. **Phase 6**: Live Phone Call Test Karna
 
 ---
 
-## 1. Architecture & How It Works
+# 🟢 PHASE 1: Software Requirements (Pehle Yeh Install Karein)
 
-```mermaid
-graph TD
-    UI[🖥️ React Admin Dashboard\nhttp://localhost:5173] -->|REST & WebSockets| API[⚙️ FastAPI Backend\nhttp://localhost:8001]
-    API -->|SQLite / PostgreSQL| DB[(🗄️ Database\ncalling_agent.db)]
-    API -->|Real-time STT / TTS| Sarvam[🎙️ Sarvam AI Engine\nSaaras v3 / Bulbul v3]
-    API -->|Transcript Lead Intel| Gemini[🧠 Google Gemini AI\nIntent & Qualification]
-    API <-->|PSTN Bidirectional Audio Stream| Carrier[📞 VoBiz / Twilio Telephony]
-    Carrier <-->|Phone Call| Phone[📱 Customer Phone]
-```
+Apne computer mein pehle yeh **4 zaroori software** install karein:
+
+### Step 1: Git Install Karein
+1. [Git for Windows Download Page](https://git-scm.com/download/win) par jayein.
+2. **"Click here to download"** par click karein aur setup file download karein.
+3. Setup open karein aur sabhi options par default **Next ➔ Next ➔ Install** click karein.
 
 ---
 
-## 2. Software Prerequisites (Install on Client Laptop)
-
-Before setting up the project, install these software tools on your laptop (Windows 10/11 recommended):
-
-| # | Software | Recommended Version | Download Link | Purpose |
-| :-: | :--- | :--- | :--- | :--- |
-| **1** | **Git** | Latest | [git-scm.com/download/win](https://git-scm.com/download/win) | Code clone & version management |
-| **2** | **Python** | `3.11` or `3.12` | [python.org/downloads](https://www.python.org/downloads/) | FastAPI backend execution |
-| **3** | **Node.js** | `v20.x LTS` or `v22.x` | [nodejs.org/en/download](https://nodejs.org/) | React Frontend compilation |
-| **4** | **Docker Desktop** | Latest | [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) | Optional container stack (MinIO / Postgres) |
-| **5** | **Ngrok** | Latest | [ngrok.com/download](https://ngrok.com/download) | Public URL for live phone webhooks |
-
-> [!IMPORTANT]
-> **When installing Python**: Check the box **"Add python.exe to PATH"** on the very first installer screen! Without this, Python commands will not work in the terminal.
+### Step 2: Python Install Karein (Important Step ⚠️)
+1. [Python 3.12 Download Page](https://www.python.org/downloads/) par jayein aur **"Download Python 3.12.x"** par click karein.
+2. Installer open karein.
+3. > [!CRITICAL]
+   > Installer ki **sabse pehli screen** par sabse niche ek checkbox hoga:  
+   > ☑️ **"Add python.exe to PATH"**  
+   > **Is box ko TICK karna zaroori hai!** Phir **Install Now** par click karein.
 
 ---
 
-## 3. How to Install & Configure Docker Desktop
-
-If you plan to run containerized services or production MinIO storage, install Docker Desktop:
-
-### Step 3.1: Download & Install
-1. Download installer from [Docker Desktop for Windows](https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe).
-2. Run the `.exe` file.
-3. Make sure **"Use WSL 2 instead of Hyper-V (recommended)"** is **checked**.
-4. Click **OK**, wait for files to extract, and **restart your laptop** when prompted.
-
-### Step 3.2: Enable WSL 2 (If Prompted on First Launch)
-If Docker Desktop shows `WSL 2 installation is incomplete`, open **PowerShell as Administrator** and run:
-```powershell
-wsl --update
-wsl --set-default-version 2
-```
-
-### Step 3.3: Verify Docker Installation
-Open PowerShell or Command Prompt and test:
-```powershell
-docker --version
-docker compose version
-```
-*(Both should return their respective version numbers without errors).*
+### Step 3: Node.js Install Karein
+1. [Node.js Official Website](https://nodejs.org/) par jayein.
+2. **"LTS (Recommended for Most Users)"** wale green button par click karke download karein.
+3. Download hone ke baad setup file run karein aur **Next ➔ Next ➔ Install** karein.
 
 ---
 
-## 4. How to Get Code from GitHub (Client Setup)
-
-### Step 4.1: Giving Access to the Client (By Repo Owner)
-If the repository is **Private**:
-1. Open GitHub: `https://github.com/Qaanit-Khan/calling-agent-platform`
-2. Go to **Settings** ➔ **Collaborators** ➔ Click **Add people**.
-3. Enter client's GitHub username or email and send the invitation.
-4. Client accepts the invitation from their email or GitHub notifications.
-
-### Step 4.2: Cloning to Client Computer
-Open **PowerShell** or **Git Bash** on the client laptop:
-```bash
-# Choose folder where you want to keep the project
-cd C:\Projects
-
-# Clone the repository
-git clone https://github.com/Qaanit-Khan/calling-agent-platform.git
-
-# Enter the project folder
-cd calling-agent-platform
-```
+### Step 4: Ngrok Install Karein (Telephony Webhooks ke liye)
+VoBiz carrier se live phone call aane ke liye Ngrok public tunnel chahiye hota hai:
+1. [ngrok.com](https://ngrok.com/download) par jayein aur Windows version download karein.
+2. Zip file ko extract karke `ngrok.exe` ko kisi folder mein rakh dein (ya Windows PATH mein add karein).
+3. [ngrok.com](https://dashboard.ngrok.com/signup) par free sign-up karein.
+4. Dashboard se apna **AuthToken** copy karein aur Command Prompt (CMD) mein yeh command chalayein:
+   ```bash
+   ngrok config add-authtoken <AAPKA_NGROK_AUTHTOKEN>
+   ```
 
 ---
 
-## 5. Environment Variables Configuration (.env)
+### Step 5 (Optional): Docker Desktop Install Karein
+*Note: Agar aap 1-Click Native Mode chala rahe hain toh Docker ki bilkul zaroorat nahi hai. Docker sirf tab chahiye jab aap MinIO S3 aur PostgreSQL container mein chalana chahein.*
+1. [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/) se download karein.
+2. Setup chalayein aur **"Use WSL 2 instead of Hyper-V"** par tick rehne dein.
+3. Install hone ke baad **PC restart** karein.
+4. Agar WSL error aaye toh PowerShell (Admin) mein chalayein:
+   ```powershell
+   wsl --update
+   wsl --set-default-version 2
+   ```
 
-Sensitive keys (API passwords, carrier secrets) are excluded from Git via `.gitignore`. You must create local `.env` files from templates.
+---
 
-### 5.1: Backend Configuration
+# 🔵 PHASE 2: GitHub Se Project Download Karna
+
+### Step 6: Code Clone Karein
+1. Apne laptop mein **Command Prompt (CMD)** ya **PowerShell** kholein.
+2. Jahan project rakhna hai wahan jayein (jaise Desktop ya C:\Projects):
+   ```bash
+   cd C:\Projects
+   ```
+3. GitHub se repository clone karein:
+   ```bash
+   git clone https://github.com/Qaanit-Khan/calling-agent-platform.git
+   ```
+4. Project folder ke andar enter karein:
+   ```bash
+   cd calling-agent-platform
+   ```
+
+---
+
+# 🟡 PHASE 3: Configuration & API Keys (`.env` Setup)
+
+Project mein do `.env` files banani hoti hain: ek Backend ke liye aur ek Frontend ke liye.
+
+### Step 7: Backend `.env` File Banayein
+Terminal mein yeh command chalayein:
 ```bash
 cd backend
 copy .env.example .env
 ```
-Open `backend/.env` in VS Code or Notepad and configure:
+
+### Step 8: Backend `.env` File Mein Keys Dalein
+`backend/.env` file ko Notepad ya VS Code mein open karein aur yeh main details fill karein:
 
 ```ini
-# ============================================================
-# Server & Public Webhook Settings
-# ============================================================
+# 1. Server aur Ngrok URL
 BACKEND_HOST=0.0.0.0
 BACKEND_PORT=8001
 ENVIRONMENT=development
-# Your Ngrok HTTPS URL (e.g. https://your-subdomain.ngrok-free.dev)
-BACKEND_PUBLIC_URL=https://your-subdomain.ngrok-free.dev
+# Ngrok start karne par jo https://xxxx.ngrok-free.dev milta hai, wo yahan dalein:
+BACKEND_PUBLIC_URL=https://your-ngrok-subdomain.ngrok-free.dev
 
-# ============================================================
-# Database Configuration (Zero-config local SQLite default)
-# ============================================================
+# 2. Database (Zero configuration SQLite — koi setup nahi chahiye)
 DATABASE_URL=sqlite+aiosqlite:///./calling_agent.db
 
-# ============================================================
-# Sarvam AI Voice & Speech Engine (TTS / STT)
-# ============================================================
+# 3. Sarvam AI Credentials (Voice STT / TTS)
 VOICE_ENGINE=sarvam
 ACTIVE_MODEL_MODE=sarvam
-SARVAM_API_KEY=your_sarvam_api_key_here
+SARVAM_API_KEY=sk_your_sarvam_api_key_here
 SARVAM_DEFAULT_VOICE=shubh
 SARVAM_TTS_MODEL=bulbul:v3
 SARVAM_STT_MODEL=saaras:v3
 SARVAM_LLM_MODEL=sarvam-105b-conversations
 
-# ============================================================
-# Google Gemini (Transcript Intelligence & Scoring)
-# ============================================================
+# 4. Google Gemini API Key (Transcript Lead Intelligence)
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=gemini-2.5-flash
 
-# ============================================================
-# VoBiz PSTN Telephony Carrier Credentials
-# ============================================================
-VOBIZ_AUTH_ID=your_vobiz_auth_id_here
-VOBIZ_AUTH_TOKEN=your_vobiz_auth_token_here
-VOBIZ_FROM_NUMBER=+9180XXXXXXXX
+# 5. VoBiz Carrier Telephony Credentials
+VOBIZ_AUTH_ID=your_vobiz_auth_id
+VOBIZ_AUTH_TOKEN=your_vobiz_auth_token
+VOBIZ_FROM_NUMBER=+91XXXXXXXXXX
 ```
 
-### 5.2: Frontend Configuration
+### Step 9: Frontend `.env` File Banayein
+Terminal mein yeh command chalayein:
 ```bash
 cd ../frontend_1
 copy .env.example .env
 ```
-Ensure `frontend_1/.env` contains:
-```ini
-VITE_API_BASE_URL=http://localhost:8001
-```
+*(Isme pehle se `VITE_API_BASE_URL=http://localhost:8001` likha hoga, isko waise hi rehne dein).*
 
 ---
 
-## 6. Installing Dependencies (Backend & Frontend)
+# 🟣 PHASE 4: Packages & Dependencies Install Karna
 
-### 6.1: Backend Virtual Environment Setup
-Open a terminal in `backend/`:
+### Step 10: Backend Python Environment & Packages Setup
+Terminal mein Backend folder mein jayein:
 ```bash
-cd backend
+cd ../backend
 
-# 1. Create a dedicated Python virtual environment
+# 1. Virtual Environment banayein
 python -m venv .venv
 
-# 2. Activate the virtual environment
-# On Windows PowerShell:
-.\.venv\Scripts\Activate.ps1
-# (If execution policy error occurs, run: Set-ExecutionPolicy Unrestricted -Scope Process)
-# On Windows Command Prompt (CMD):
+# 2. Virtual Environment activate karein (Windows CMD mein):
 .\.venv\Scripts\activate.bat
+# (Agar PowerShell use kar rahe hain toh: .\.venv\Scripts\Activate.ps1)
 
-# 3. Install all required dependencies
+# 3. Python packages install karein (FastAPI, SQLAlchemy, Sarvam SDK, etc.)
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 6.2: Frontend Node Modules Setup
-Open another terminal in `frontend_1/`:
+### Step 11: Frontend Node Packages Setup
+Ab Frontend folder mein jayein aur packages install karein:
 ```bash
-cd frontend_1
+cd ../frontend_1
 
-# Install Node dependencies
+# React aur UI dependencies install karein
 npm install
 ```
 
 ---
 
-## 7. Starting the Platform (2 Ways: 1-Click vs Docker)
+# 🟠 PHASE 5: Project Start Karna (1-Click Run)
 
-You have two easy choices for running the platform:
+### Step 12: `start_all.bat` Run Karein (Sabse Aasan Tarika)
 
-### ⚡ Method A: 1-Click Native Mode (Recommended / Zero-Docker)
-*Fastest setup, zero container overhead, ultra-responsive.*
-
-1. In the project root folder, double-click **`start_all.bat`**.
-2. It automatically starts:
-   - **FastAPI Backend**: `http://localhost:8001`
-   - **React Dashboard**: `http://localhost:5173`
-   - **Ngrok Telephony Tunnel**: For VoBiz live telephone streams
-3. Open your browser at: **`http://localhost:5173`**!
-
----
-
-### 🐳 Method B: Docker Stack Mode (Full Production)
-*Used when running MinIO S3 audio storage & PostgreSQL.*
-
-1. Ensure **Docker Desktop** is running.
-2. In the project root directory, run:
-```bash
-docker compose up -d --build
-```
-3. Services:
-   - **React Dashboard**: `http://localhost:5174`
-   - **FastAPI Backend**: `http://localhost:8001`
-   - **API Documentation**: `http://localhost:8001/docs`
-   - **Health Endpoint**: `http://localhost:8001/health`
+1. Project ke main root folder (`calling-agent-platform`) mein jayein.
+2. Wahan **`start_all.bat`** file par double-click karein!
+3. Yeh script automatically:
+   - **Backend** start karega Port `8001` par.
+   - **Frontend** start karega Port `5173` par.
+   - **Ngrok Tunnel** launch karega Port `8001` ke liye.
+4. Apne browser mein yeh link kholein:  
+   👉 **`http://localhost:5173`**
 
 ---
 
-## 8. Verifying Setup & Testing a Live Call
-
-Follow this quick 4-step checklist to verify everything is operational:
-
-### Step 8.1: Check Health
-Open in browser: `http://localhost:8001/health`  
-Status should report `"status": "online"` with healthy database and voice AI engines.
-
-### Step 8.2: Verify Settings in Dashboard
-1. Open `http://localhost:5173/settings`.
-2. **Sarvam AI Tab**: Click **"Test Connection"** ➔ Shows `CONNECTED` (green).
-3. **VoBiz Telephony Tab**: Check that Carrier Auth ID & Token are saved.
-4. **Transcript API Tab**: Click **"Test Live Connection"** ➔ Verifies Google Gemini connectivity with response latency in milliseconds.
-
-### Step 8.3: Place an Outbound Test Call
-1. Click **AI Agents** in the sidebar.
-2. Choose an agent (e.g., *Customer Support Agent*).
-3. Click **Quick Call / Dial**, enter your mobile number (`+91XXXXXXXXXX`), and click **Call Now**.
-4. Your phone will ring! Answer and talk in Hindi, English, or Hinglish.
-5. Hang up and open **Calls History**:
-   - Verify the **complete live transcript** of what was spoken.
-   - Listen to the **authentic audio recording** via the embedded Audio Player.
-   - Check the **Lead Intelligence analysis** (Interested / Callback / Not Interested classification).
+### *Alternative: Agar Docker mein chalana ho (Docker Stack Mode)*
+Agar aap containers use karna chahte hain:
+1. Docker Desktop open karein.
+2. Root directory mein command chalayein:
+   ```bash
+   docker compose up -d --build
+   ```
+3. Dashboard: `http://localhost:5174` | Backend: `http://localhost:8001`
 
 ---
 
-## 9. Troubleshooting & FAQs
+# 🔴 PHASE 6: Testing & Live Calling (Aise Check Karein)
 
-### Q1: Python command not found or 'venv' cannot be created?
-**Fix**: Ensure Python is added to your Windows PATH. Open Start Menu, search `Environment Variables`, click `Path`, and verify `C:\Python312` and `C:\Python312\Scripts` are present.
+Sab kuch chalne ke baad yeh **3 checks** karein:
 
-### Q2: What if my Google Gemini API Key limit/quota expires?
-**Fix**: You do **not** need to touch the code or restart the server!
-1. Go to [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) and generate a new key in 1 click.
-2. Open `http://localhost:5173/settings?tab=transcript`.
-3. Paste the new key and click **Save & Update Key (Real-Time)**. It updates instantly in runtime memory and `.env`!
+### Step 13: Settings Page Verify Karein
+1. Browser mein jayein: `http://localhost:5173/settings`
+2. **Sarvam AI Tab**: **"Test Connection"** par click karein ➔ **`CONNECTED`** (Green) aana chahiye.
+3. **VoBiz Telephony Tab**: Check karein Auth ID aur Caller ID saved hain.
+4. **Transcript API Tab**: **"Test Live Connection"** par click karein ➔ Google Gemini verified ho jayega (`CONNECTED (xx ms)`).
 
-### Q3: VoBiz phone call connects, but no audio?
-**Fix**: Check that your Ngrok tunnel is running and that `BACKEND_PUBLIC_URL` in `backend/.env` matches your active Ngrok URL (e.g. `https://your-ngrok.ngrok-free.dev`). VoBiz requires a public HTTPS URL to stream telephony audio packets.
-
-### Q4: Port 8001 or 5173 is already in use?
-**Fix**: Open Command Prompt and terminate the blocked process:
-```bash
-netstat -ano | findstr :8001
-taskkill /PID <PID_NUMBER> /F
-```
+### Step 14: Live Outbound Call Lagayein
+1. Dashboard ke left menu mein **"AI Agents"** par click karein.
+2. Kisi bhi agent (e.g. *Customer Support Agent*) par click karein.
+3. **"Call Now"** ya **Quick Dial** button dabayein aur apna 10-digit mobile number dalein (`+91XXXXXXXXXX`).
+4. **"Call Now"** click karein.
+5. **Aapke phone par call aayegi!** Phone uthaiye aur Hindi ya English mein baat karein.
+6. Call disconnect hone ke baad **"Calls History"** mein jayein:
+   - Wahan aapko **Customer aur AI Agent dono ka live transcript** dikhega.
+   - Audio Player mein **100% original call recording** sun sakte hain.
+   - AI interest analysis (Interested / Callback / Not Interested) check karein.
 
 ---
 
-## 📄 License & Ownership
-Created for **ARB SoftTech Calling Agent Platform**. All source code, AI prompts, and models are fully configured for direct enterprise deployment.
+## 🛠️ Common Errors & Quick Fixes (FAQ)
+
+### 1. `python` command recognize nahi ho rahi?
+> **Karan**: Python install karte waqt "Add python.exe to PATH" tick nahi kiya gaya tha.  
+> **Solution**: Python installer dobara run karein, **Modify** par click karein aur PATH checkbox tick karein.
+
+### 2. `ExecutionPolicy` error in PowerShell when activating venv?
+> **Solution**: PowerShell ko "Run as Administrator" kholein aur yeh command chalayein:
+> ```powershell
+> Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
+
+### 3. Google Gemini API key quota khatam ho gaya?
+> **Solution**: Server ya code chhedne ki zaroorat nahi hai!  
+> 1. [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) se free mein nayi key generate karein.  
+> 2. `http://localhost:5173/settings?tab=transcript` par paste karke **Save & Update Key** click karein. Yeh bina restart kiye turant live apply ho jayegi.
+
+### 4. Phone par aawaz nahi aa rahi ya call drop ho gayi?
+> **Solution**: Check karein ki Ngrok chal raha hai aur `backend/.env` mein `BACKEND_PUBLIC_URL` ka link wahi hai jo Ngrok terminal window mein dikh raha hai (e.g. `https://xxxx.ngrok-free.dev`).
+
+---
+
+## 📞 Support & Handover Note
+Platform successfully verified and tested for enterprise production deployment. Sabhi source codes, models, aur real-time audio pipeline scripts configured hain.
