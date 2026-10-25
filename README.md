@@ -82,82 +82,141 @@ Before setting up the project, ensure your environment meets the following requi
 
 ---
 
-## 🚀 Quick Start Guide (Installation & Setup)
+## 🐳 Does This Project Need Docker? (Architectural Comparison)
+
+This repository provides **two flexible deployment modes** to match your infrastructure requirements:
+
+| Feature / Mode | ⚡ Mode 1: Native Sarvam AI Mode (Recommended) | 🐳 Mode 2: Docker Infrastructure Mode |
+| :--- | :--- | :--- |
+| **Docker Required?** | ❌ **No Docker Needed (Zero Docker)** | ✅ **Yes (Requires Docker Desktop)** |
+| **Setup Complexity** | Zero configuration — runs in 2 minutes | Multi-container Docker orchestration |
+| **Speech Engine** | Native **Sarvam AI** (`saaras:v3` STT & `bulbul:v2` TTS) | Dograh Voice Engine + Pipecat |
+| **Database** | Lightweight local SQLite (`calling_agent.db`) | Containerized PostgreSQL (`port 5433`) |
+| **Audio Storage** | Local disk storage (`backend/app/recordings/`) | MinIO S3 Object Storage (`ports 9000/9001`) |
+| **Background Queue**| Built-in async event loop | Containerized Redis (`port 6379`) |
+| **Launch Command** | Double-click `start_all.bat` or run commands | `docker compose up -d` in `dograh/` |
+
+> [!TIP]
+> **Which one should you choose?**
+> - For fast testing, development, and standard production calling: **Use Mode 1 (Zero Docker)**. It connects directly to Sarvam AI and VoBiz with zero container overhead and lowest latency.
+> - For enterprise multi-tenant deployments requiring MinIO S3 audio storage, PostgreSQL clusters, and Redis caching: **Use Mode 2 (Docker Compose)**.
+
+---
+
+## 🎯 Zero-to-Live-Calling Walkthrough (Step-by-Step)
+
+Follow this complete guide to make your first live AI outbound phone call:
 
 ### Step 1: Clone the Repository
-
 ```bash
-git clone https://github.com/<your-username>/<your-repo-name>.git
-cd <your-repo-name>
+git clone https://github.com/Qaanit-Khan/calling-agent-platform.git
+cd calling-agent-platform
 ```
 
 ---
 
-### Step 2: Backend Setup
-
-1. **Navigate to the backend directory**:
+### Step 2: Configure Backend Environment
+1. Enter the backend directory:
    ```bash
    cd backend
    ```
-
-2. **Create and activate a Python virtual environment**:
-   - **Windows (PowerShell)**:
-     ```powershell
-     python -m venv .venv
-     .\.venv\Scripts\Activate.ps1
-     ```
-   - **Linux / macOS**:
-     ```bash
-     python3 -m venv .venv
-     source .venv/bin/activate
-     ```
-
-3. **Install dependencies**:
-   ```bash
-   pip install --upgrade pip
-   pip install -r requirements.txt
-   ```
-
-4. **Configure Environment Variables**:
-   Copy the example environment file and update it with your credentials:
+2. Create your `.env` file from `.env.example`:
    ```bash
    # Windows:
    copy .env.example .env
-   # Linux/macOS:
+   # Linux / macOS:
    cp .env.example .env
    ```
-   *Edit `.env` and configure your `SARVAM_API_KEY`, `VOBIZ_*` or `TWILIO_*` credentials.*
+3. Open `backend/.env` and fill in your keys:
+   ```env
+   # Voice Engine & Sarvam AI Credentials
+   VOICE_ENGINE=sarvam
+   SARVAM_API_KEY=your_actual_sarvam_api_key_here
+   SARVAM_DEFAULT_VOICE=shubh
+
+   # VoBiz Telephony Provider Credentials
+   VOBIZ_AUTH_ID=your_vobiz_auth_id
+   VOBIZ_AUTH_TOKEN=your_vobiz_auth_token
+   VOBIZ_FROM_NUMBER=+91XXXXXXXXXX
+   ```
 
 ---
 
-### Step 3: Frontend Setup
-
-1. **Navigate to the frontend directory**:
+### Step 3: Install Backend & Frontend Dependencies
+1. **Backend**:
+   ```bash
+   # Windows PowerShell:
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   pip install -r requirements.txt
+   ```
+2. **Frontend**:
    ```bash
    cd ../frontend_1
-   ```
-
-2. **Install Node packages**:
-   ```bash
+   copy .env.example .env
    npm install
    ```
 
-3. **Configure Environment Variables**:
-   ```bash
-   # Windows:
-   copy .env.example .env
-   # Linux/macOS:
-   cp .env.example .env
-   ```
-   *Default setting is `VITE_API_BASE_URL=http://localhost:8001`.*
+---
+
+### Step 4: Start Ngrok Webhook Tunnel
+Telecom carriers (VoBiz / Twilio) require a public HTTPS URL to deliver audio stream events and call answers.
+
+Open a new terminal and run:
+```bash
+ngrok http 8001
+```
+Copy the forwarding URL (e.g. `https://your-tunnel.ngrok-free.dev`) and set it in `backend/.env`:
+```env
+BACKEND_PUBLIC_URL=https://your-tunnel.ngrok-free.dev
+```
 
 ---
 
-### Step 4: Webhook Tunnel Setup (For Live Calling)
+### Step 5: Launch All Services
+You can start everything in **one click** on Windows:
+- Double-click **`start_all.bat`** in the root folder.
 
-Telephony providers (VoBiz / Twilio) require a publicly accessible URL to send webhook events during calls.
+Or launch manually:
+- **Terminal 1 (Backend)**: `cd backend && uvicorn app.main:app --port 8001 --reload`
+- **Terminal 2 (Frontend)**: `cd frontend_1 && npm run dev`
 
-If running locally, start an **ngrok** tunnel pointing to backend port `8001`:
+---
+
+### Step 6: Trigger Your Outbound Phone Call
+1. Open the Web Dashboard in your browser: [http://localhost:5173](http://localhost:5173).
+2. Go to **Agents** and select or customize your voice agent (e.g. Admission Counseling, Broadband Support).
+3. Click **Quick Dial** (or go to **Calls** ➡️ **Initiate Call**).
+4. Enter the recipient mobile number (e.g., `+9198XXXXXXXX`).
+5. Click **Call Now**.
+6. The recipient's mobile phone will ring within 2-3 seconds!
+
+---
+
+### 🛑 Intelligent Automatic Call Disconnection (Auto-Hangup)
+When the recipient declines or asks to conclude (e.g., saying *"नहीं चाहिए"*, *"कट कर दो"*, *"not interested"*, *"व्यस्त हूँ"*):
+1. **Instant Refusal Detection**: The platform identifies negative intent via `is_refusal_or_call_termination`.
+2. **Polite Farewell**: The agent immediately says: *"जी ठीक है, समय देने के लिए आपका बहुत धन्यवाद! नमस्कार।"*
+3. **PSTN Carrier Disconnect**: The platform automatically fires the VoBiz Carrier Hangup API, immediately terminating the phone call on the customer's device.
+4. **Authentic Two-Way Recording**: Both the customer's phone microphone audio and the agent's voice are mixed and saved directly in `backend/app/recordings/` for playback in the dashboard.
+
+---
+
+## 🐳 Optional Mode 2: Launching with Docker Infrastructure
+
+If you wish to use PostgreSQL, Redis, MinIO S3, and Dograh infrastructure:
+1. Ensure **Docker Desktop** is running.
+2. In your terminal, run:
+   ```bash
+   cd dograh
+   docker compose up -d
+   ```
+3. This spins up:
+   - **PostgreSQL**: `localhost:5433` (`voxora`)
+   - **Redis**: `localhost:6379`
+   - **MinIO S3 Console**: [http://localhost:9001](http://localhost:9001) (`localhost:9000`)
+   - **Dograh Engine**: [http://localhost:8000](http://localhost:8000)
+   - **Dograh UI**: [http://localhost:3010](http://localhost:3010)
 ```bash
 ngrok http 8001
 ```

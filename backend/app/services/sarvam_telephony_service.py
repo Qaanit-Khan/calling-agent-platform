@@ -176,6 +176,41 @@ class SarvamTelephonyService:
             return "priya"
         return self.default_voice or "shubh"
 
+    @staticmethod
+    def is_refusal_or_call_termination(text: str) -> bool:
+        """
+        Detects if the caller wants to end the call, refuses, or is not interested.
+        Supports Hindi, Hinglish, and English phrases.
+        """
+        if not text:
+            return False
+        t = text.lower().strip()
+
+        # Direct refusal & call-cut keywords
+        refusal_keywords = [
+            "नहीं चाहिए", "नहीं चाहिये", "नहीं लेना", "नहीं चाहिए जी", "नहीं चाहिए मुझे",
+            "कट कर", "कट करो", "काट दो", "काट दीजिए", "काटो", "फोन रखो", "फोन काट",
+            "रखो फोन", "रहने दो", "रहने दीजिए", "मत करो", "फोन मत करो", "कॉल मत",
+            "नहीं नहीं", "नहीं जी", "नहीं भाई", "नहीं थैंक यू", "नहीं धन्यवाद", "थैंक यू नहीं",
+            "बाद में बात", "बाद में करो", "अभी बिजी", "बिजी हूँ", "व्यस्त हूँ", "गलत नंबर", "रॉन्ग नंबर",
+            "not interested", "no thanks", "don't call", "cut the call", "cut it", "hang up",
+            "stop calling", "wrong number", "busy right now", "call later", "bye", "अलविदा",
+            "बंद करो", "रख दीजिए", "नही चाहिए", "काट दिजिये", "काट दीजिये", "काट"
+        ]
+        if any(k in t for k in refusal_keywords):
+            return True
+
+        # Standalone negative response words
+        clean_words = [w.strip("।,?!.") for w in t.split()]
+        if clean_words in (
+            ["नहीं"], ["नहीं", "नहीं"], ["नहीं", "नहीं", "नहीं"],
+            ["no"], ["no", "no"], ["no", "no", "no"],
+            ["ना"], ["ना", "ना"], ["नही"], ["नही", "नही"]
+        ):
+            return True
+
+        return False
+
     async def synthesize_speech(
         self,
         text: str,
@@ -442,13 +477,12 @@ class SarvamTelephonyService:
                 pcm_data = audioop.ulaw2lin(mulaw_chunk, 2)
                 if speaker == "customer":
                     rms = audioop.rms(pcm_data, 2)
-                    if rms > 40:
-                        # Dynamic AGC: scale low cellular microphone input so caller voice is crystal clear
-                        gain = min(9.0, max(2.5, 4000.0 / max(rms, 50)))
-                        pcm_data = audioop.mul(pcm_data, 2, gain)
+                    # Dynamic AGC: scale low cellular microphone input so caller voice is crystal clear
+                    gain = min(12.0, max(3.0, 5000.0 / max(rms, 25)))
+                    pcm_data = audioop.mul(pcm_data, 2, gain)
                 elif speaker == "agent":
                     # Soften agent slightly so caller is never drowned out
-                    pcm_data = audioop.mul(pcm_data, 2, 0.82)
+                    pcm_data = audioop.mul(pcm_data, 2, 0.85)
 
                 start_sample = max(0, int(offset_sec * 8000))
                 num_samples = len(pcm_data) // 2
@@ -483,8 +517,9 @@ class SarvamTelephonyService:
         logger.info(f"[SarvamTelephony] VoBiz WebSocket connected for Call ID: {call_id}")
 
         call_start_time = time.time()
-        agent: Optional[Agent] = None
-        call_record: Optional[Call] = None
+        carrier_call_uuid: Optional[str] = None
+        carrier_auth_id = settings.VOBIZ_AUTH_ID
+        carrier_auth_token = settings.VOBIZ_AUTH_TOKEN
 
         # Fetch Call and Agent from DB
         async with AsyncSessionLocal() as session:
@@ -494,7 +529,13 @@ class SarvamTelephonyService:
             if call_record:
                 call_record.status = "in_progress"
                 call_record.answered_at = datetime.now(UTC)
+                carrier_call_uuid = call_record.telephony_call_id
                 agent = await session.get(Agent, call_record.agent_id)
+                if agent:
+                    if getattr(agent, "telephony_auth_id", None):
+                        carrier_auth_id = agent.telephony_auth_id
+                    if getattr(agent, "telephony_auth_token", None):
+                        carrier_auth_token = agent.telephony_auth_token
                 await session.commit()
 
         if not agent:
@@ -530,7 +571,7 @@ class SarvamTelephonyService:
             f"3. Ask One Question at a Time: End with exactly one short question to guide the student or customer.\n"
             f"4. If caller says 'Hello', 'हेलो', 'हॅलो', 'कौन?': Confirm warmly ('जी, मैं {comp_name} से {agent_name} बात कर रहा हूँ') and ask your question.\n"
             f"5. If caller answers 'हाँ' or 'हाँजी': Proceed directly with the next relevant guidance question.\n"
-            f"6. If caller declines or is not interested: Say 'जी ठीक है, आपका बहुत धन्यवाद!' and conclude."
+            f"6. If caller declines, says no, says not interested, or asks to cut the call ('नहीं', 'कट कर दो', 'नहीं चाहिए', 'not interested'): Say ONLY 'जी ठीक है, आपका बहुत धन्यवाद! नमस्कार।' and conclude immediately. Do not ask any more questions."
         )
 
         conversation_history: List[Dict[str, str]] = [
@@ -706,6 +747,62 @@ class SarvamTelephonyService:
                                     current_playback_task.cancel()
                                     await self.stop_playback_and_clear(websocket, stream_id)
 
+                                # Check if caller refused, declined, or requested call disconnection
+                                if self.is_refusal_or_call_termination(user_text):
+                                    logger.info(f"[SarvamTelephony] Refusal/Hangup requested by caller: '{user_text}'. Concluding call {call_id} immediately.")
+                                    farewell_reply = "जी ठीक है, समय देने के लिए आपका बहुत धन्यवाद! नमस्कार।"
+                                    conversation_history.append({"role": "assistant", "content": farewell_reply})
+
+                                    # Persist farewell transcript segment
+                                    async with AsyncSessionLocal() as session:
+                                        stmt = select(Transcript).where(Transcript.call_id == call_id)
+                                        tr = (await session.execute(stmt)).scalar_one_or_none()
+                                        if tr:
+                                            session.add(
+                                                TranscriptSegment(
+                                                    transcript_id=tr.id,
+                                                    speaker="agent",
+                                                    text=farewell_reply,
+                                                    start_time=round(now - call_start_time, 2),
+                                                    end_time=round(time.time() - call_start_time, 2),
+                                                    sequence=sequence_counter,
+                                                    confidence=1.0,
+                                                )
+                                            )
+                                            await session.commit()
+                                    sequence_counter += 1
+
+                                    # Play farewell audio
+                                    farewell_mulaw = await self.synthesize_speech(farewell_reply, voice=voice_id)
+                                    if farewell_mulaw:
+                                        current_playback_task = asyncio.create_task(play_audio_task(farewell_mulaw))
+                                        await current_playback_task
+                                        # Pause so telecom carrier buffer transmits audio cleanly to caller's ear
+                                        await asyncio.sleep(1.2)
+
+                                    # Actively terminate call from telecom carrier side (VoBiz PSTN Hangup)
+                                    try:
+                                        from app.services.telephony_service import telephony_service
+                                        uuid_to_hangup = carrier_call_uuid or stream_id
+                                        if uuid_to_hangup:
+                                            logger.info(f"[SarvamTelephony] Executing telecom carrier hangup for call {call_id} (uuid: {uuid_to_hangup})...")
+                                            await telephony_service.hangup_live_telephony_call(
+                                                call_uuid=uuid_to_hangup,
+                                                auth_id=carrier_auth_id,
+                                                auth_token=carrier_auth_token,
+                                            )
+                                    except Exception as hangup_err:
+                                        logger.warning(f"[SarvamTelephony] Carrier hangup error: {hangup_err}")
+
+                                    # Mark disposition in DB as not_interested
+                                    async with AsyncSessionLocal() as session:
+                                        c = await session.get(Call, call_id)
+                                        if c:
+                                            c.disposition = "not_interested"
+                                            await session.commit()
+
+                                    break
+
                                 # Stream-and-synthesize pipeline:
                                 # Overlap LLM token streaming with sentence-level TTS synthesis
                                 full_reply_chunks = []
@@ -755,11 +852,23 @@ class SarvamTelephonyService:
                                         await session.commit()
                                 sequence_counter += 1
 
-                                # Check if call should conclude
-                                if any(w in user_text for w in ["नहीं चाहिए", "रहने दो", "bye", "अलविदा", "बाद में बात"]):
-                                    logger.info("[SarvamTelephony] Call conclusion requested by caller.")
-                                    await asyncio.sleep(2.5)
-                                    break
+                                # Check if agent concluded call
+                                if any(w in full_reply for w in ["धन्यवाद", "अलविदा", "नमस्कार", "bye"]):
+                                    if any(w in user_text for w in ["नहीं", "bye", "रखो", "काटो", "नो", "no", "ना"]):
+                                        logger.info("[SarvamTelephony] Natural conversational wrap-up concluded.")
+                                        await asyncio.sleep(1.2)
+                                        try:
+                                            from app.services.telephony_service import telephony_service
+                                            uuid_to_hangup = carrier_call_uuid or stream_id
+                                            if uuid_to_hangup:
+                                                await telephony_service.hangup_live_telephony_call(
+                                                    call_uuid=uuid_to_hangup,
+                                                    auth_id=carrier_auth_id,
+                                                    auth_token=carrier_auth_token,
+                                                )
+                                        except Exception:
+                                            pass
+                                        break
 
                 elif event in ("stop", "hangup", "disconnect"):
                     logger.info(f"[SarvamTelephony] Call end event received from VoBiz: {event}")
@@ -773,16 +882,31 @@ class SarvamTelephonyService:
             if current_playback_task and not current_playback_task.done():
                 current_playback_task.cancel()
 
+            # Safeguard: ensure live phone call is disconnected on carrier side
+            try:
+                from app.services.telephony_service import telephony_service
+                uuid_to_hangup = carrier_call_uuid or stream_id
+                if uuid_to_hangup:
+                    await telephony_service.hangup_live_telephony_call(
+                        call_uuid=uuid_to_hangup,
+                        auth_id=carrier_auth_id,
+                        auth_token=carrier_auth_token,
+                    )
+            except Exception as e:
+                logger.debug(f"[SarvamTelephony] Final carrier hangup safeguard note: {e}")
+
             call_duration = round(time.time() - call_start_time, 2)
             logger.info(f"[SarvamTelephony] Finalizing call {call_id} (Duration: {call_duration}s, Audio events: {len(recorded_timeline)})")
 
             # 1. Build mixed WAV recording
             wav_bytes = self._build_call_wav(recorded_timeline, call_duration)
-            rms_val = audioop.rms(wav_bytes[44:], 2) if (wav_bytes and len(wav_bytes) > 44) else 0
 
-            # If live stream captured silence or was empty, synthesize dialogues from transcript
-            if rms_val < 50:
-                logger.info(f"[SarvamTelephony] Live mixed audio was silent (RMS: {rms_val}); reconstructing from transcript turns...")
+            # Check if genuine live audio was captured from customer
+            customer_audio_events = [c for _, spk, c in recorded_timeline if spk == "customer" and c]
+
+            # ONLY fallback to synthetic reconstruction if NO genuine caller audio at all was captured from network stream
+            if not recorded_timeline or not customer_audio_events:
+                logger.info(f"[SarvamTelephony] Zero live audio chunks captured from stream; checking fallback...")
                 try:
                     async with AsyncSessionLocal() as rec_session:
                         from app.services.storage.audio_generator import reconstruct_call_audio_from_transcript
@@ -791,6 +915,8 @@ class SarvamTelephonyService:
                             wav_bytes = reconstructed
                 except Exception as rec_err:
                     logger.warning(f"[SarvamTelephony] Audio reconstruction fallback notice: {rec_err}")
+            else:
+                logger.info(f"[SarvamTelephony] Preserved authentic 2-way live recording ({len(customer_audio_events)} caller audio chunks).")
 
             storage_key = f"calls/{call_id}/recording.wav"
 
