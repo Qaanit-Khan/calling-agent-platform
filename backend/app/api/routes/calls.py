@@ -16,7 +16,7 @@ from app.schemas.call import (
     InitiateCallRequest,
     InitiateCallResponse,
 )
-from app.services.call_service import call_service, persist_post_call_artifacts, TERMINAL_STATES
+from app.services.call_service import CallServiceException, call_service, persist_post_call_artifacts, TERMINAL_STATES
 from app.services.dograh_service import DograhServiceException, dograh_service
 from app.services.lead_intelligence_service import lead_intelligence_service
 from app.services.redis_service import redis_service
@@ -153,6 +153,11 @@ async def initiate_call(
             call_id=call.id,
             status=call.status,
             message="Call successfully initiated",
+        )
+    except CallServiceException as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={"success": False, "error": e.error_code, "message": e.message, "detail": e.message},
         )
     except DograhServiceException as e:
         raise HTTPException(

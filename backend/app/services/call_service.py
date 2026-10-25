@@ -24,6 +24,15 @@ from app.services.storage.s3 import storage_service
 
 logger = logging.getLogger(__name__)
 
+
+class CallServiceException(Exception):
+    def __init__(self, message: str, status_code: int = 500, error_code: str = "CALL_SERVICE_ERROR"):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+        self.error_code = error_code
+
+
 # Canonical status set
 STATUS_INITIATING = "initiating"
 STATUS_RINGING = "ringing"
@@ -532,9 +541,17 @@ class CallService:
             else:
                 caller_id = settings.VOBIZ_FROM_NUMBER or "+918065354620"
 
-        # 3. Resolve Custom Carrier Credentials from Agent
-        custom_tel_auth_id = getattr(agent, "telephony_auth_id", None)
-        custom_tel_auth_token = getattr(agent, "telephony_auth_token", None)
+        # 3. Resolve Custom Carrier Credentials from Agent (ignore dummy placeholders)
+        custom_tel_auth_id = (getattr(agent, "telephony_auth_id", None) or "").strip() or None
+        custom_tel_auth_token = (getattr(agent, "telephony_auth_token", None) or "").strip() or None
+
+        # If agent token is a placeholder (e.g. 'secret_token_KorW' or < 20 chars), fallback to settings
+        if custom_tel_auth_token and (custom_tel_auth_token.startswith("secret_") or len(custom_tel_auth_token) < 20):
+            logger.info(f"Agent {agent.name} has placeholder auth token '{custom_tel_auth_token}'; falling back to system VOBIZ_AUTH_TOKEN.")
+            custom_tel_auth_token = None
+
+        if custom_tel_auth_id and len(custom_tel_auth_id) < 6:
+            custom_tel_auth_id = None
 
         # Step 5: Voice Engine Selection & Sync
         voice_engine = getattr(settings, "VOICE_ENGINE", "sarvam").lower()

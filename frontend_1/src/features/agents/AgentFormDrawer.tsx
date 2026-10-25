@@ -156,9 +156,23 @@ export const AgentFormDrawer: React.FC<AgentFormDrawerProps> = ({
       setAssignedBusinessId(existingBiz?.id || '');
 
       // Load voice config if present
-      if (agent.tts_provider) {
-        setTtsProvider(['dograh', 'sarvam'].includes(agent.tts_provider.toLowerCase()) ? agent.tts_provider.toLowerCase() : 'dograh');
+      const isSarvamVoice = (vid?: string) => {
+        if (!vid) return false;
+        const v = vid.toLowerCase();
+        return (
+          ['shubh', 'shreya', 'aditya', 'priya', 'neha', 'rahul', 'pooja', 'rohan', 'simran', 'kavya', 'amit', 'dev', 'ishita', 'meera', 'pavithra', 'mahesh', 'advait', 'anand', 'sunny', 'mani', 'gokul', 'vijay', 'shruti', 'suhani', 'mohit', 'kavitha', 'rehan', 'soham', 'rupali'].some((s) => v.includes(s)) ||
+          (!v.startsWith('hm_') && !v.startsWith('hf_') && !v.startsWith('dg_'))
+        );
+      };
+
+      if (agent.tts_provider?.toLowerCase() === 'sarvam' || isSarvamVoice(agent.voice_id)) {
+        setTtsProvider('sarvam');
+      } else if (agent.tts_provider?.toLowerCase() === 'dograh') {
+        setTtsProvider('dograh');
+      } else {
+        setTtsProvider('sarvam');
       }
+
       if (agent.voice_id) setVoiceId(agent.voice_id);
       if (agent.voice_name) setVoiceName(agent.voice_name);
       if (agent.voice_gender) setVoiceGender(agent.voice_gender);
@@ -189,9 +203,9 @@ export const AgentFormDrawer: React.FC<AgentFormDrawerProps> = ({
       setAssignedBusinessId(
         selectedBusinessId === 'all' ? businesses[0]?.id || '' : selectedBusinessId
       );
-      setTtsProvider('dograh');
-      setVoiceId('hm_omega');
-      setVoiceName('Omega - Clear Hindi Male (Kokoro)');
+      setTtsProvider('sarvam');
+      setVoiceId('shubh');
+      setVoiceName('Shubh - Northern Conversational (Sarvam AI)');
       setVoiceGender('male');
       setSpeakingSpeed(1.0);
       setVoiceStyle('Friendly + Professional + Conversational');
@@ -562,7 +576,7 @@ export const AgentFormDrawer: React.FC<AgentFormDrawerProps> = ({
             <div>
               <h4 className="text-xs font-bold text-slate-700 dark:text-neutral-300 uppercase tracking-wider flex items-center gap-1.5">
                 <AudioLines className="w-3.5 h-3.5 text-orange-400" />
-                2. Dograh AI TTS Voice Engine & Audio Examples
+                2. Sarvam & Dograh AI TTS Voice Engine & Audio Examples
               </h4>
               <p className="text-[11px] text-slate-500 dark:text-neutral-400 mt-0.5">
                 Select from verified AI TTS voices provided by Dograh. Listen to voice samples before selecting.
