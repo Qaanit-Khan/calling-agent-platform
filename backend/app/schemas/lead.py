@@ -23,7 +23,9 @@ class LeadResponse(BaseModel):
     email: Optional[str] = None
     status: str = "new"
     score: float = 0.0
+    confidence_score: float = 0.0
     reason: Optional[str] = None
+    reasoning: Optional[str] = None
     notes: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: str

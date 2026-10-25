@@ -26,16 +26,19 @@ except Exception as e:
 from app.models.call import Call, Transcript, TranscriptSegment
 from app.models.lead import Lead, Followup
 from app.models.contact import Contact
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class LeadIntelligenceService:
     """
-    Service wrapper for the Multilingual AI Call Transcript Intent Classifier.
-    Evaluates real customer conversation transcripts across English, Hindi, Hinglish, and Marathi
-    to classify intent into INTERESTED, NOT_INTERESTED, CALLBACK_REQUESTED, NEEDS_INFORMATION, UNCERTAIN
-    with interest strength scoring (HIGH, MEDIUM, LOW, UNKNOWN).
+    Lead Interest Intelligence Service powered by Google Gemini LLM
+    with secondary fallback to the Multilingual AI Intent Classifier.
+    Evaluates real customer conversation transcripts across English, Hindi (Devanagari & Hinglish),
+    Marathi, and Indic code-mixed speech.
+    Accurately scores confidence, explains reasoning, detects opt-outs, and manages the
+    Interested Leads Pipeline.
     """
 
     def __init__(self):
@@ -58,10 +61,98 @@ class LeadIntelligenceService:
 
         return "\n".join(lines).strip()
 
+    async def analyze_with_gemini(self, transcript_text: str) -> Optional[Dict[str, Any]]:
+        """
+        Uses Gemini LLM to accurately determine customer intent and interest from multi-turn transcript.
+        Specifically handles Indic dialects, Hindi transliterations ('नॉट इंटरेस्टेड', 'नहीं चाहिए'),
+        and nuanced sales conversation signals.
+        """
+        gemini_key = getattr(settings, "GEMINI_API_KEY", None) or os.environ.get("GEMINI_API_KEY", "")
+        if not gemini_key:
+            return None
+
+        # Fast, low-latency, resilient model hierarchy
+        configured_model = getattr(settings, "GEMINI_MODEL", "gemini-3.1-flash-lite")
+        candidate_models = list(dict.fromkeys([
+            configured_model,
+            "gemini-3.1-flash-lite",
+            "gemini-3.5-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-3.5-flash",
+        ]))
+
+        prompt = f"""You are a specialized Lead Interest Intelligence analyzer for enterprise sales and support telephony calls.
+Your objective: accurately classify customer intent from the conversation transcript.
+
+Transcript to analyze:
+\"\"\"
+{transcript_text}
+\"\"\"
+
+Crucial Classification Rules:
+1. Indic & Hindi Nuances:
+   - Phrases like "नॉट इंटरेस्टेड", "not interested", "नहीं बोलना", "नहीं चाहिए", "phone mat karo", "fursat nahi hai", "cut the call", "wrong number", or hanging up with clear negative sentiment MUST BE CLASSIFIED AS:
+     status: "not_interested", is_interested: false, classification: "NOT_INTERESTED", interest_strength: "NONE", confidence: 0.90 to 0.99.
+   - Under NO circumstance should a customer rejection or refusal be classified as interested!
+2. Genuine Interest:
+   - Customer inquires about pricing, offers, products, or service assistance (e.g. "kya plan hai", "bataiye", "price kitna hai", agrees to next step/demo):
+     status: "interested", is_interested: true, classification: "INTERESTED", interest_strength: "HIGH" or "MEDIUM", confidence: 0.70 to 0.99.
+3. Callback Request:
+   - Customer asks to be called back later ("baad mein call karo", "call tomorrow"):
+     status: "callback_requested", is_interested: true, classification: "CALLBACK_REQUESTED", interest_strength: "MEDIUM", confidence: 0.80 to 0.95.
+4. Ambiguous / Disconnected:
+   - Customer only uttered greeting ("hello") or silence with no real engagement:
+     status: "uncertain", is_interested: false, classification: "UNCERTAIN", interest_strength: "LOW", confidence: 0.30 to 0.50.
+
+Return ONLY a valid JSON object with these exact keys:
+{{
+  "status": "interested" | "not_interested" | "callback_requested" | "uncertain",
+  "is_interested": boolean,
+  "classification": "INTERESTED" | "NOT_INTERESTED" | "CALLBACK_REQUESTED" | "UNCERTAIN",
+  "interest_strength": "HIGH" | "MEDIUM" | "LOW" | "NONE",
+  "confidence": float,
+  "reasoning": string,
+  "rule_applied": string,
+  "signals": list of strings,
+  "languages": list of strings,
+  "opt_out_detected": boolean,
+  "callback_requested": boolean
+}}"""
+
+        import httpx
+
+        for model_name in candidate_models:
+            m_clean = model_name if not model_name.startswith("models/") else model_name.split("/")[-1]
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_clean}:generateContent?key={gemini_key}"
+            try:
+                async with httpx.AsyncClient(timeout=25.0) as client:
+                    resp = await client.post(
+                        url,
+                        json={
+                            "contents": [{"parts": [{"text": prompt}]}],
+                            "generationConfig": {
+                                "responseMimeType": "application/json",
+                                "temperature": 0.1,
+                                "thinkingConfig": {"thinkingBudget": 0},
+                            },
+                        },
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        text_payload = data["candidates"][0]["content"]["parts"][0]["text"]
+                        import json
+                        parsed = json.loads(text_payload)
+                        logger.info(f"Lead intelligence successfully evaluated via Gemini ({m_clean}): status={parsed.get('status')}, confidence={parsed.get('confidence')}")
+                        return parsed
+            except Exception as ex:
+                logger.warning(f"Error querying Gemini model {m_clean} for lead intelligence: {type(ex).__name__} - {str(ex)[:100]}")
+
+        return None
+
     async def analyze_call(self, session: AsyncSession, call: Call) -> Dict[str, Any]:
         """
-        Analyzes a call's full transcript using the IntentClassifier engine
-        and updates the call disposition, lead, and contact suppression records.
+        Analyzes a call's full transcript using Gemini LLM (with fallback to local engine)
+        and updates the call disposition, contact suppression, and Interested Leads Pipeline.
         """
         transcript_text = self.build_transcript_text(call)
 
@@ -88,6 +179,133 @@ class LeadIntelligenceService:
                 "created_at": datetime.now(UTC).isoformat(),
             }
 
+        # 1. Primary: Evaluate using Gemini LLM
+        gemini_result = None
+        try:
+            gemini_result = await self.analyze_with_gemini(transcript_text)
+        except Exception as ge:
+            logger.warning(f"Gemini lead analysis failed, falling back to rule engine: {ge}")
+
+        if gemini_result and isinstance(gemini_result, dict):
+            status = gemini_result.get("status", "uncertain")
+            is_interested = bool(gemini_result.get("is_interested", False))
+            confidence = float(gemini_result.get("confidence", 0.85))
+            classification_str = gemini_result.get("classification", "UNCERTAIN")
+            interest_strength_str = gemini_result.get("interest_strength", "NONE" if not is_interested else "HIGH")
+            opt_out = bool(gemini_result.get("opt_out_detected", False))
+            callback_req = bool(gemini_result.get("callback_requested", False))
+            reasoning = gemini_result.get("reasoning", "")
+            rule_applied = gemini_result.get("rule_applied", "Gemini AI Lead Interest Intelligence")
+            signals = gemini_result.get("signals", [])
+            languages = gemini_result.get("languages", ["Hindi"])
+
+            # Sync Call disposition
+            if opt_out:
+                status = "not_interested"
+                call.disposition = "not_interested"
+                if call.contact_id:
+                    try:
+                        c_stmt = select(Contact).where(Contact.id == call.contact_id)
+                        c_res = await session.execute(c_stmt)
+                        contact = c_res.scalar_one_or_none()
+                        if contact:
+                            contact.status = "do_not_call"
+                            session.add(contact)
+                    except Exception as ce:
+                        logger.warning(f"Could not update contact DNC: {ce}")
+            elif callback_req:
+                status = "callback_requested"
+                call.disposition = "callback_requested"
+            elif is_interested:
+                status = "interested"
+                call.disposition = "interested"
+            else:
+                status = "not_interested"
+                call.disposition = "not_interested"
+
+            session.add(call)
+
+            # Manage Lead in Database
+            lead_stmt = select(Lead).where(Lead.call_id == call.id)
+            lead_res = await session.execute(lead_stmt)
+            existing_lead = lead_res.scalar_one_or_none()
+
+            if is_interested and not opt_out:
+                lead_metadata = {
+                    "classification": classification_str,
+                    "interest_strength": interest_strength_str,
+                    "signals": signals,
+                    "rule_applied": rule_applied,
+                    "analyzer": "gemini",
+                }
+                phone = call.phone_number or call.caller_number
+                if not existing_lead:
+                    existing_lead = Lead(
+                        tenant_id=call.tenant_id,
+                        agent_id=call.agent_id,
+                        contact_id=call.contact_id,
+                        call_id=call.id,
+                        phone_number=phone,
+                        score=confidence,
+                        reason=reasoning,
+                        status="interested",
+                        metadata_json=lead_metadata,
+                    )
+                    session.add(existing_lead)
+                else:
+                    existing_lead.score = confidence
+                    existing_lead.reason = reasoning
+                    existing_lead.status = "interested"
+                    existing_lead.metadata_json = lead_metadata
+                    session.add(existing_lead)
+            else:
+                # If not genuinely interested, ensure FALSE leads are removed from pipeline
+                if existing_lead:
+                    await session.delete(existing_lead)
+
+            # Check follow-up detector
+            followup_info = None
+            if followup_detector:
+                try:
+                    f_res = followup_detector.detect_followup_detailed(transcript_text)
+                    if f_res.category_id is not None:
+                        followup_info = {
+                            "category_id": f_res.category_id,
+                            "name": f_res.name,
+                            "description": f_res.description,
+                            "requires_followup": f_res.requires_followup,
+                            "action": f_res.action,
+                            "suggested_scheduled_at": f_res.suggested_scheduled_at,
+                            "matched_utterance": f_res.matched_utterance,
+                        }
+                except Exception as fe:
+                    logger.debug(f"Followup check exception: {fe}")
+
+            return {
+                "analysis_id": f"intel_{call.id}",
+                "call_id": call.id,
+                "agent_id": call.agent_id,
+                "contact_id": call.contact_id,
+                "status": status,
+                "confidence_score": confidence,
+                "confidence": confidence,
+                "classification": classification_str,
+                "binary_classification": "interested" if is_interested else "not_interested",
+                "interest_strength": interest_strength_str,
+                "opt_out_detected": opt_out,
+                "callback_requested": callback_req,
+                "objection_detected": None,
+                "reasoning": reasoning,
+                "rule_applied": rule_applied,
+                "signals": signals,
+                "languages": languages,
+                "keywords": [f"Lang: {l}" for l in languages] + signals,
+                "followup": followup_info,
+                "raw_model_output": gemini_result,
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+
+        # 2. Secondary Fallback: Use local rule classifier if Gemini was unavailable
         if self.classifier:
             try:
                 diag: DetailedClassificationResponse = self.classifier.classify_detailed(transcript_text)
@@ -101,7 +319,6 @@ class LeadIntelligenceService:
                 if diag.opt_out_detected:
                     status = "not_interested"
                     call.disposition = "not_interested"
-                    # Update Contact record to do_not_call if present
                     if call.contact_id:
                         try:
                             contact_stmt = select(Contact).where(Contact.id == call.contact_id)
@@ -125,16 +342,18 @@ class LeadIntelligenceService:
                 session.add(call)
 
                 # Auto-create or update Lead record if interested and NOT opted-out
+                lead_stmt = select(Lead).where(Lead.call_id == call.id)
+                lead_res = await session.execute(lead_stmt)
+                lead = lead_res.scalar_one_or_none()
+
                 if is_interested and not diag.opt_out_detected:
-                    lead_stmt = select(Lead).where(Lead.call_id == call.id)
-                    lead_res = await session.execute(lead_stmt)
-                    lead = lead_res.scalar_one_or_none()
                     lead_metadata = {
                         "classification": diag.classification.value,
                         "interest_strength": diag.interest_strength.value,
                         "objection_detected": diag.objection_detected,
                         "signals": diag.signals_detected,
                         "rule_applied": diag.rule_applied,
+                        "analyzer": "rule_engine",
                     }
                     if not lead:
                         lead = Lead(
@@ -142,7 +361,7 @@ class LeadIntelligenceService:
                             agent_id=call.agent_id,
                             contact_id=call.contact_id,
                             call_id=call.id,
-                            phone_number=call.phone_number,
+                            phone_number=call.phone_number or call.caller_number,
                             score=confidence,
                             reason=diag.reason,
                             status="interested",
@@ -154,12 +373,15 @@ class LeadIntelligenceService:
                         lead.reason = diag.reason
                         lead.status = "interested"
                         lead.metadata_json = lead_metadata
+                        session.add(lead)
+                else:
+                    if lead:
+                        await session.delete(lead)
 
                 keywords = list(diag.signals_detected) if diag.signals_detected else []
                 if diag.languages_detected:
                     keywords.extend([f"Lang: {l}" for l in diag.languages_detected if l not in keywords])
 
-                # Check follow-up condition
                 followup_info = None
                 if followup_detector:
                     f_res = followup_detector.detect_followup_detailed(transcript_text)
@@ -198,7 +420,8 @@ class LeadIntelligenceService:
                     "created_at": datetime.now(UTC).isoformat(),
                 }
             except Exception as e:
-                logger.error(f"IntentClassifier failed on call {call.id}: {e}", exc_info=True)
+                logger.error(f"IntentClassifier fallback failed on call {call.id}: {e}", exc_info=True)
+
 
         # Fallback if engine unavailable
         return {

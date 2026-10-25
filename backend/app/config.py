@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     SARVAM_STT_MODEL: str = "saaras:v3"
     SARVAM_LLM_MODEL: str = "sarvam-105b-conversations"
 
+    # Gemini API Settings for Lead Interest Intelligence
+    GEMINI_API_KEY: str = "AQ.Ab8RN6J1RKgw1NStOWvbQEO42teSRlMC24APSg1jDQTKX-pJag"
+    GEMINI_MODEL: str = "gemini-3.1-flash-lite"
+
 
     @field_validator("DOGRAH_BASE_URL", mode="before")
     @classmethod

@@ -50,8 +50,8 @@ export const LeadsPage: React.FC = () => {
       'Lead ID': l.lead_id,
       'Prospect Phone': l.phone_number,
       'Pipeline Status': l.status || 'new',
-      'Confidence Score': `${Math.round((l.confidence_score || 0.85) * 100)}%`,
-      'Reasoning': l.reasoning || 'N/A',
+      'Confidence Score': `${Math.round(((l.confidence_score !== undefined && l.confidence_score !== null) ? l.confidence_score : ((l as any).score ?? 0)) * 100)}%`,
+      'Reasoning': l.reasoning || l.notes || 'N/A',
       'Call ID': l.call_id || 'N/A',
       'Agent ID': l.agent_id || 'N/A',
       'Captured At': l.created_at ? format(new Date(l.created_at), 'yyyy-MM-dd HH:mm:ss') : 'N/A',
@@ -124,7 +124,8 @@ export const LeadsPage: React.FC = () => {
       header: 'Interest Score',
       sortable: true,
       render: (lead) => {
-        const pct = Math.round((lead.confidence_score || 0.85) * 100);
+        const rawScore = lead.confidence_score !== undefined && lead.confidence_score !== null ? lead.confidence_score : ((lead as any).score ?? 0);
+        const pct = Math.round(rawScore * 100);
         return (
           <div className="w-24 space-y-1">
             <div className="flex items-center justify-between text-[11px] font-mono">

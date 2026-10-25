@@ -389,13 +389,19 @@ async def persist_post_call_artifacts(session: AsyncSession, call: Call, payload
                         contact_id=call.contact_id,
                         agent_id=call.agent_id,
                         call_id=call.id,
-                        phone_number=call.phone_number,
+                        phone_number=call.phone_number or call.caller_number,
                         status="interested",
                         score=intel.get("confidence_score", 0.85),
                         reason=intel.get("reasoning", call.disposition),
                         metadata_json=intel,
                     )
                     session.add(lead)
+            else:
+                lead_stmt = select(Lead).where(Lead.call_id == call.id)
+                l_res = await session.execute(lead_stmt)
+                false_lead = l_res.scalar_one_or_none()
+                if false_lead:
+                    await session.delete(false_lead)
 
             # Handle Follow-up auto-scheduling for busy calls or detected followup conditions
             followup_stmt = select(Followup).where(Followup.call_id == call.id)
