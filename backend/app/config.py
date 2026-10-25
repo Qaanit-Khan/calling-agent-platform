@@ -372,3 +372,78 @@ def save_sarvam_credentials(api_key: str, default_voice: Optional[str] = None) -
     except Exception as e:
         logging.getLogger(__name__).warning(f"Could not persist Sarvam credentials to {env_file}: {e}")
 
+
+def save_transcript_api_credentials(gemini_api_key: str, gemini_model: Optional[str] = None) -> None:
+    """
+    Updates runtime settings and writes Google Gemini / Transcript AI credentials to .env file for persistence.
+    Updates in real-time without requiring backend restart.
+    """
+    import os
+    import logging
+    from pathlib import Path
+
+    clean_key = (gemini_api_key or "").strip()
+    settings.GEMINI_API_KEY = clean_key
+    os.environ["GEMINI_API_KEY"] = clean_key
+    os.environ["GOOGLE_API_KEY"] = clean_key
+
+    if gemini_model:
+        clean_model = gemini_model.strip()
+        settings.GEMINI_MODEL = clean_model
+        os.environ["GEMINI_MODEL"] = clean_model
+
+    possible_paths = [
+        Path(".env"),
+        Path(__file__).resolve().parent.parent / ".env",
+        Path(__file__).resolve().parent.parent.parent / ".env",
+    ]
+    env_file = None
+    for p in possible_paths:
+        if p.exists() and p.is_file():
+            env_file = p
+            break
+    if not env_file:
+        env_file = Path(__file__).resolve().parent.parent / ".env"
+
+    updates = {
+        "GEMINI_API_KEY": clean_key,
+    }
+    if gemini_model:
+        updates["GEMINI_MODEL"] = gemini_model.strip()
+
+    lines = []
+    if env_file.exists():
+        try:
+            with open(env_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            lines = []
+
+    new_lines = []
+    seen_keys = set()
+    for line in lines:
+        matched_key = None
+        for k in updates:
+            if line.strip().startswith(f"{k}="):
+                matched_key = k
+                break
+        if matched_key:
+            new_lines.append(f"{matched_key}={updates[matched_key]}\n")
+            seen_keys.add(matched_key)
+        else:
+            new_lines.append(line)
+
+    unseen = [k for k in updates if k not in seen_keys]
+    if unseen:
+        if new_lines and not new_lines[-1].endswith("\n"):
+            new_lines.append("\n")
+        new_lines.append("\n# Google Gemini / Transcript Intelligence Credentials\n")
+        for k in unseen:
+            new_lines.append(f"{k}={updates[k]}\n")
+
+    try:
+        with open(env_file, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Could not persist Transcript API credentials to {env_file}: {e}")
+

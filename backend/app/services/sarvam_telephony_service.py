@@ -4,11 +4,13 @@ import base64
 import io
 import json
 import logging
+import math
+import struct
 import time
 import uuid
 import wave
 from datetime import UTC, datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 from fastapi import WebSocket, WebSocketDisconnect
@@ -398,6 +400,7 @@ class SarvamTelephonyService:
         stream_id: str,
         mulaw_bytes: bytes,
         chunk_size: int = 640,  # 640 bytes = 80ms of 8kHz mu-law audio
+        on_chunk_sent: Optional[Callable[[bytes], None]] = None,
     ):
         """
         Streams mu-law audio chunks into the VoBiz WebSocket using the official
@@ -425,6 +428,11 @@ class SarvamTelephonyService:
                     },
                 }
                 await websocket.send_text(json.dumps(msg))
+                if on_chunk_sent:
+                    try:
+                        on_chunk_sent(chunk)
+                    except Exception:
+                        pass
                 offset += chunk_size
                 await asyncio.sleep(frame_interval)
             logger.info(f"[SarvamTelephony] Finished playing audio to VoBiz (streamId: {stream_id}).")
@@ -458,53 +466,106 @@ class SarvamTelephonyService:
     ) -> bytes:
         """
         Mixes recorded timeline of 8000Hz mu-law chunks (both caller and agent)
-        into a clean, synchronized 16-bit PCM WAV recording.
-        Preserves 100% authentic telephony microphone audio of the human caller.
+        into a clean, synchronized, glitch-free 16-bit PCM WAV recording.
+        Preserves 100% authentic telephony microphone audio of the human caller
+        without packet stacking, jitter clicks, or clipping distortion.
         """
         if not timeline:
             from app.services.storage.audio_generator import generate_synthesized_call_audio
             return generate_synthesized_call_audio(duration_seconds=duration_seconds or 6.0)
 
-        max_chunk_end = max((offset_sec + (len(mulaw_chunk) / 8000.0)) for offset_sec, _, mulaw_chunk in timeline if mulaw_chunk) if timeline else 0.0
-        dur = max(float(duration_seconds or 2.0), max_chunk_end + 0.5, 2.0)
+        # Separate customer and agent chunks
+        customer_events = [(offset, chunk) for offset, spk, chunk in timeline if spk == "customer" and chunk]
+        agent_events = [(offset, chunk) for offset, spk, chunk in timeline if spk == "agent" and chunk]
+
+        # Calculate total recording duration
+        max_time = float(duration_seconds or 2.0)
+        for offset, _, chunk in timeline:
+            if chunk:
+                end_t = offset + (len(chunk) / 8000.0)
+                if end_t > max_time:
+                    max_time = end_t
+        dur = max(max_time + 0.5, 2.0)
         total_samples = int(dur * 8000)
-        pcm_buffer = bytearray(b"\x00\x00" * total_samples)
 
-        for offset_sec, speaker, mulaw_chunk in timeline:
-            if not mulaw_chunk:
-                continue
+        customer_pcm = [0] * total_samples
+        agent_pcm = [0] * total_samples
+
+        # 1. Place customer chunks with jitter smoothing (continuous timeline)
+        # Prevents packet clumping and comb-filtering buzz from network arrival jitter
+        curr_cust_idx = 0
+        for offset_sec, chunk in customer_events:
             try:
-                pcm_data = audioop.ulaw2lin(mulaw_chunk, 2)
-                if speaker == "customer":
-                    rms = audioop.rms(pcm_data, 2)
-                    # Dynamic AGC: scale low cellular microphone input so caller voice is crystal clear
-                    gain = min(12.0, max(3.0, 5000.0 / max(rms, 25)))
-                    pcm_data = audioop.mul(pcm_data, 2, gain)
-                elif speaker == "agent":
-                    # Soften agent slightly so caller is never drowned out
-                    pcm_data = audioop.mul(pcm_data, 2, 0.85)
+                pcm = audioop.ulaw2lin(chunk, 2)
+                n_samples = len(pcm) // 2
+                samples = struct.unpack(f"<{n_samples}h", pcm)
 
-                start_sample = max(0, int(offset_sec * 8000))
-                num_samples = len(pcm_data) // 2
-                end_sample = min(start_sample + num_samples, total_samples)
-                if start_sample >= total_samples:
-                    continue
+                target_idx = max(0, int(offset_sec * 8000))
+                # If packet arrives within jitter window (within 60ms = 480 samples),
+                # place continuously following previous packet for smooth, uninterrupted caller audio
+                if curr_cust_idx > 0 and abs(target_idx - curr_cust_idx) <= 480:
+                    start_idx = curr_cust_idx
+                else:
+                    start_idx = target_idx
 
-                start_byte = start_sample * 2
-                end_byte = end_sample * 2
-                chunk_slice = pcm_data[: end_byte - start_byte]
-                existing = bytes(pcm_buffer[start_byte:end_byte])
-                mixed = audioop.add(existing, chunk_slice, 2)
-                pcm_buffer[start_byte:end_byte] = mixed
+                end_idx = min(start_idx + n_samples, total_samples)
+                if start_idx < total_samples:
+                    for i in range(end_idx - start_idx):
+                        customer_pcm[start_idx + i] = samples[i]
+                    curr_cust_idx = start_idx + n_samples
             except Exception as e:
-                logger.debug(f"[SarvamTelephony] Error mixing audio chunk: {e}")
+                logger.debug(f"[SarvamTelephony] Error placing customer chunk: {e}")
 
+        # 2. Place agent chunks
+        for offset_sec, chunk in agent_events:
+            try:
+                pcm = audioop.ulaw2lin(chunk, 2)
+                n_samples = len(pcm) // 2
+                samples = struct.unpack(f"<{n_samples}h", pcm)
+                start_idx = max(0, int(offset_sec * 8000))
+                end_idx = min(start_idx + n_samples, total_samples)
+                if start_idx < total_samples:
+                    for i in range(end_idx - start_idx):
+                        agent_pcm[start_idx + i] = samples[i]
+            except Exception as e:
+                logger.debug(f"[SarvamTelephony] Error placing agent chunk: {e}")
+
+        # 3. Dynamic balance & Clean AGC
+        # Measure customer voice energy on active speech frames only (|sample| > 250)
+        active_customer_samples = [abs(s) for s in customer_pcm if abs(s) > 250]
+        if active_customer_samples:
+            mean_active = sum(active_customer_samples) / len(active_customer_samples)
+            # Gentle target: bring customer speech to ~2800 mean amplitude, clamped between 1.0 and 2.5
+            customer_gain = min(2.5, max(1.0, 2800.0 / max(mean_active, 50.0)))
+        else:
+            customer_gain = 1.2
+
+        agent_gain = 0.85  # Balance agent slightly below caller
+
+        # 4. Mix tracks with soft saturation limiter (absolutely zero digital clipping)
+        out_samples = [0] * total_samples
+        for i in range(total_samples):
+            c_val = customer_pcm[i] * customer_gain
+            a_val = agent_pcm[i] * agent_gain
+            mixed = c_val + a_val
+
+            # Soft-saturation limiter for seamless analog-like headroom
+            if mixed > 28000.0:
+                capped = 28000.0 + (32760.0 - 28000.0) * math.tanh((mixed - 28000.0) / 4760.0)
+            elif mixed < -28000.0:
+                diff = -mixed - 28000.0
+                capped = -(28000.0 + (32760.0 - 28000.0) * math.tanh(diff / 4760.0))
+            else:
+                capped = mixed
+            out_samples[i] = int(capped)
+
+        raw_pcm = struct.pack(f"<{total_samples}h", *out_samples)
         wav_buf = io.BytesIO()
         with wave.open(wav_buf, "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(8000)
-            w.writeframes(pcm_buffer)
+            w.writeframes(raw_pcm)
 
         return wav_buf.getvalue()
 
@@ -607,12 +668,13 @@ class SarvamTelephonyService:
         # State tracking for real-time bidirectional loop
         stream_id: Optional[str] = None
         greeting_started = False
-        current_playback_task: Optional[asyncio.Task] = None
+        current_turn_task: Optional[asyncio.Task] = None
         is_agent_speaking = False
         agent_finished_speaking_time = 0.0
 
         audio_buffer = bytearray()
         is_user_speaking = False
+        caller_turn_start_time = 0.0
         last_speech_time = 0.0
         energy_threshold = 300  # RMS threshold for caller voice activity detection
         sequence_counter = 1
@@ -622,12 +684,175 @@ class SarvamTelephonyService:
         async def play_audio_task(mulaw_data: bytes):
             nonlocal is_agent_speaking, agent_finished_speaking_time
             is_agent_speaking = True
-            recorded_timeline.append((time.time() - call_start_time, "agent", mulaw_data))
+
+            def on_chunk(chunk: bytes):
+                recorded_timeline.append((time.time() - call_start_time, "agent", chunk))
+
             try:
-                await self.stream_audio_to_vobiz(websocket, stream_id or call_id, mulaw_data)
+                await self.stream_audio_to_vobiz(
+                    websocket,
+                    stream_id or call_id,
+                    mulaw_data,
+                    on_chunk_sent=on_chunk,
+                )
             finally:
                 is_agent_speaking = False
                 agent_finished_speaking_time = time.time()
+
+        async def process_caller_turn(user_audio_bytes: bytes, t_start: float, t_end: float):
+            nonlocal sequence_counter, is_agent_speaking, agent_finished_speaking_time
+            t_turn_start = time.time()
+            logger.info(f"[SarvamTelephony] Caller finished turn ({len(user_audio_bytes)} bytes). Transcribing...")
+            user_text = await self.transcribe_audio(user_audio_bytes)
+            stt_duration_ms = round((time.time() - t_turn_start) * 1000)
+
+            if not user_text or not user_text.strip():
+                logger.info("[SarvamTelephony] STT returned empty transcription.")
+                return
+
+            logger.info(f"[SarvamTelephony] Caller said: '{user_text}' (STT took {stt_duration_ms}ms)")
+            conversation_history.append({"role": "user", "content": user_text})
+
+            # Persist caller transcript segment in DB with accurate timestamps
+            async with AsyncSessionLocal() as session:
+                stmt = select(Transcript).where(Transcript.call_id == call_id)
+                tr = (await session.execute(stmt)).scalar_one_or_none()
+                if tr:
+                    session.add(
+                        TranscriptSegment(
+                            transcript_id=tr.id,
+                            speaker="customer",
+                            text=user_text,
+                            start_time=round(t_start - call_start_time, 2),
+                            end_time=round(t_end - call_start_time, 2),
+                            sequence=sequence_counter,
+                            confidence=0.98,
+                        )
+                    )
+                    await session.commit()
+            sequence_counter += 1
+
+            # Check if caller refused, declined, or requested call disconnection
+            if self.is_refusal_or_call_termination(user_text):
+                logger.info(f"[SarvamTelephony] Refusal/Hangup requested by caller: '{user_text}'. Concluding call {call_id} immediately.")
+                farewell_reply = "जी ठीक है, समय देने के लिए आपका बहुत धन्यवाद! नमस्कार।"
+                conversation_history.append({"role": "assistant", "content": farewell_reply})
+
+                farewell_start = time.time()
+                farewell_mulaw = await self.synthesize_speech(farewell_reply, voice=voice_id)
+                if farewell_mulaw:
+                    await play_audio_task(farewell_mulaw)
+                    await asyncio.sleep(1.2)
+
+                # Persist farewell transcript segment
+                async with AsyncSessionLocal() as session:
+                    stmt = select(Transcript).where(Transcript.call_id == call_id)
+                    tr = (await session.execute(stmt)).scalar_one_or_none()
+                    if tr:
+                        session.add(
+                            TranscriptSegment(
+                                transcript_id=tr.id,
+                                speaker="agent",
+                                text=farewell_reply,
+                                start_time=round(farewell_start - call_start_time, 2),
+                                end_time=round(time.time() - call_start_time, 2),
+                                sequence=sequence_counter,
+                                confidence=1.0,
+                            )
+                        )
+                        await session.commit()
+                sequence_counter += 1
+
+                # Actively terminate call from telecom carrier side (VoBiz PSTN Hangup)
+                try:
+                    from app.services.telephony_service import telephony_service
+                    uuid_to_hangup = carrier_call_uuid or stream_id
+                    if uuid_to_hangup:
+                        logger.info(f"[SarvamTelephony] Executing telecom carrier hangup for call {call_id} (uuid: {uuid_to_hangup})...")
+                        await telephony_service.hangup_live_telephony_call(
+                            call_uuid=uuid_to_hangup,
+                            auth_id=carrier_auth_id,
+                            auth_token=carrier_auth_token,
+                        )
+                except Exception as hangup_err:
+                    logger.warning(f"[SarvamTelephony] Carrier hangup error: {hangup_err}")
+
+                # Mark disposition in DB as not_interested
+                async with AsyncSessionLocal() as session:
+                    c = await session.get(Call, call_id)
+                    if c:
+                        c.disposition = "not_interested"
+                        await session.commit()
+
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
+                return
+
+            # Stream-and-synthesize pipeline:
+            full_reply_chunks = []
+            first_audio_dispatched = False
+            agent_speech_start = time.time()
+
+            async for sentence in self.stream_llm_chunks(conversation_history, system_prompt):
+                clean_s = sentence.strip()
+                if not clean_s:
+                    continue
+                full_reply_chunks.append(clean_s)
+                sentence_mulaw = await self.synthesize_speech(clean_s, voice=voice_id)
+                if sentence_mulaw:
+                    if not first_audio_dispatched:
+                        first_audio_dispatched = True
+                        total_latency = round((time.time() - t_turn_start) * 1000)
+                        logger.info(f"[SarvamTelephony] >> Ultra-fast Time To First Audio: {total_latency}ms! <<")
+                    await play_audio_task(sentence_mulaw)
+
+            full_reply = " ".join(full_reply_chunks).strip()
+            if not full_reply:
+                full_reply = "जी, बताइए मैं आपकी कैसे सहायता कर सकता हूँ?"
+            logger.info(f"[SarvamTelephony] Full agent response: '{full_reply}'")
+            conversation_history.append({"role": "assistant", "content": full_reply})
+
+            # Persist assistant transcript segment
+            async with AsyncSessionLocal() as session:
+                stmt = select(Transcript).where(Transcript.call_id == call_id)
+                tr = (await session.execute(stmt)).scalar_one_or_none()
+                if tr:
+                    session.add(
+                        TranscriptSegment(
+                            transcript_id=tr.id,
+                            speaker="agent",
+                            text=full_reply,
+                            start_time=round(agent_speech_start - call_start_time, 2),
+                            end_time=round(time.time() - call_start_time, 2),
+                            sequence=sequence_counter,
+                            confidence=1.0,
+                        )
+                    )
+                    await session.commit()
+            sequence_counter += 1
+
+            # Check if agent concluded call
+            if any(w in full_reply for w in ["धन्यवाद", "अलविदा", "नमस्कार", "bye"]):
+                if any(w in user_text for w in ["नहीं", "bye", "रखो", "काटो", "नो", "no", "ना"]):
+                    logger.info("[SarvamTelephony] Natural conversational wrap-up concluded.")
+                    await asyncio.sleep(1.2)
+                    try:
+                        from app.services.telephony_service import telephony_service
+                        uuid_to_hangup = carrier_call_uuid or stream_id
+                        if uuid_to_hangup:
+                            await telephony_service.hangup_live_telephony_call(
+                                call_uuid=uuid_to_hangup,
+                                auth_id=carrier_auth_id,
+                                auth_token=carrier_auth_token,
+                            )
+                    except Exception:
+                        pass
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
 
         try:
             while True:
@@ -649,7 +874,7 @@ class SarvamTelephonyService:
                     if not greeting_started and greeting_mulaw:
                         greeting_started = True
                         logger.info(f"[SarvamTelephony] Firing instant opening greeting to streamId: {stream_id}")
-                        current_playback_task = asyncio.create_task(play_audio_task(greeting_mulaw))
+                        current_turn_task = asyncio.create_task(play_audio_task(greeting_mulaw))
 
                 elif event == "media":
                     # Capture streamId if not captured yet
@@ -660,7 +885,7 @@ class SarvamTelephonyService:
                     if not greeting_started and greeting_mulaw:
                         greeting_started = True
                         logger.info(f"[SarvamTelephony] Firing greeting on first media chunk for streamId: {stream_id}")
-                        current_playback_task = asyncio.create_task(play_audio_task(greeting_mulaw))
+                        current_turn_task = asyncio.create_task(play_audio_task(greeting_mulaw))
 
                     media_payload = msg.get("media", {}).get("payload", "")
                     if not media_payload:
@@ -676,13 +901,14 @@ class SarvamTelephonyService:
                     if is_agent_speaking:
                         if rms > 550:
                             logger.info(f"[SarvamTelephony] Caller interrupted agent! (RMS: {rms}). Clearing playback buffer.")
-                            if current_playback_task and not current_playback_task.done():
-                                current_playback_task.cancel()
+                            if current_turn_task and not current_turn_task.done():
+                                current_turn_task.cancel()
                             await self.stop_playback_and_clear(websocket, stream_id)
                             is_agent_speaking = False
                             agent_finished_speaking_time = now
                             # Start accumulating this caller speech immediately
                             is_user_speaking = True
+                            caller_turn_start_time = now
                             audio_buffer.clear()
                             audio_buffer.extend(chunk)
                             last_speech_time = now
@@ -696,7 +922,11 @@ class SarvamTelephonyService:
                     if rms > energy_threshold:
                         if not is_user_speaking:
                             is_user_speaking = True
+                            caller_turn_start_time = now
                             logger.debug(f"[SarvamTelephony] Caller started speaking (RMS: {rms})")
+                            # If agent response is thinking/generating before speech, cancel and prioritize caller
+                            if current_turn_task and not current_turn_task.done():
+                                current_turn_task.cancel()
                         audio_buffer.extend(chunk)
                         last_speech_time = now
                     elif is_user_speaking:
@@ -709,166 +939,17 @@ class SarvamTelephonyService:
                             is_user_speaking = False
                             user_audio = bytes(audio_buffer)
                             audio_buffer.clear()
+                            t_start = caller_turn_start_time
+                            t_end = last_speech_time
 
                             # Require at least 400ms (3200 bytes) of genuine speech to prevent triggering on background clicks
                             if len(user_audio) < 3200:
                                 continue
 
-                            t_turn_start = time.time()
-                            logger.info(f"[SarvamTelephony] Caller finished turn ({len(user_audio)} bytes). Transcribing...")
-                            user_text = await self.transcribe_audio(user_audio)
-                            stt_duration_ms = round((time.time() - t_turn_start) * 1000)
-
-                            if user_text and len(user_text.strip()) > 0:
-                                logger.info(f"[SarvamTelephony] Caller said: '{user_text}' (STT took {stt_duration_ms}ms)")
-                                conversation_history.append({"role": "user", "content": user_text})
-
-                                # Persist caller transcript segment in DB
-                                async with AsyncSessionLocal() as session:
-                                    stmt = select(Transcript).where(Transcript.call_id == call_id)
-                                    tr = (await session.execute(stmt)).scalar_one_or_none()
-                                    if tr:
-                                        session.add(
-                                            TranscriptSegment(
-                                                transcript_id=tr.id,
-                                                speaker="customer",
-                                                text=user_text,
-                                                start_time=round(last_speech_time - call_start_time, 2),
-                                                end_time=round(now - call_start_time, 2),
-                                                sequence=sequence_counter,
-                                                confidence=0.98,
-                                            )
-                                        )
-                                        await session.commit()
-                                sequence_counter += 1
-
-                                # Interrupt any lingering audio
-                                if current_playback_task and not current_playback_task.done():
-                                    current_playback_task.cancel()
-                                    await self.stop_playback_and_clear(websocket, stream_id)
-
-                                # Check if caller refused, declined, or requested call disconnection
-                                if self.is_refusal_or_call_termination(user_text):
-                                    logger.info(f"[SarvamTelephony] Refusal/Hangup requested by caller: '{user_text}'. Concluding call {call_id} immediately.")
-                                    farewell_reply = "जी ठीक है, समय देने के लिए आपका बहुत धन्यवाद! नमस्कार।"
-                                    conversation_history.append({"role": "assistant", "content": farewell_reply})
-
-                                    # Persist farewell transcript segment
-                                    async with AsyncSessionLocal() as session:
-                                        stmt = select(Transcript).where(Transcript.call_id == call_id)
-                                        tr = (await session.execute(stmt)).scalar_one_or_none()
-                                        if tr:
-                                            session.add(
-                                                TranscriptSegment(
-                                                    transcript_id=tr.id,
-                                                    speaker="agent",
-                                                    text=farewell_reply,
-                                                    start_time=round(now - call_start_time, 2),
-                                                    end_time=round(time.time() - call_start_time, 2),
-                                                    sequence=sequence_counter,
-                                                    confidence=1.0,
-                                                )
-                                            )
-                                            await session.commit()
-                                    sequence_counter += 1
-
-                                    # Play farewell audio
-                                    farewell_mulaw = await self.synthesize_speech(farewell_reply, voice=voice_id)
-                                    if farewell_mulaw:
-                                        current_playback_task = asyncio.create_task(play_audio_task(farewell_mulaw))
-                                        await current_playback_task
-                                        # Pause so telecom carrier buffer transmits audio cleanly to caller's ear
-                                        await asyncio.sleep(1.2)
-
-                                    # Actively terminate call from telecom carrier side (VoBiz PSTN Hangup)
-                                    try:
-                                        from app.services.telephony_service import telephony_service
-                                        uuid_to_hangup = carrier_call_uuid or stream_id
-                                        if uuid_to_hangup:
-                                            logger.info(f"[SarvamTelephony] Executing telecom carrier hangup for call {call_id} (uuid: {uuid_to_hangup})...")
-                                            await telephony_service.hangup_live_telephony_call(
-                                                call_uuid=uuid_to_hangup,
-                                                auth_id=carrier_auth_id,
-                                                auth_token=carrier_auth_token,
-                                            )
-                                    except Exception as hangup_err:
-                                        logger.warning(f"[SarvamTelephony] Carrier hangup error: {hangup_err}")
-
-                                    # Mark disposition in DB as not_interested
-                                    async with AsyncSessionLocal() as session:
-                                        c = await session.get(Call, call_id)
-                                        if c:
-                                            c.disposition = "not_interested"
-                                            await session.commit()
-
-                                    break
-
-                                # Stream-and-synthesize pipeline:
-                                # Overlap LLM token streaming with sentence-level TTS synthesis
-                                full_reply_chunks = []
-                                first_audio_dispatched = False
-
-                                async def stream_conversation_turn():
-                                    nonlocal first_audio_dispatched, is_agent_speaking
-                                    async for sentence in self.stream_llm_chunks(conversation_history, system_prompt):
-                                        clean_s = sentence.strip()
-                                        if not clean_s:
-                                            continue
-                                        full_reply_chunks.append(clean_s)
-                                        t_syn_start = time.time()
-                                        sentence_mulaw = await self.synthesize_speech(clean_s, voice=voice_id)
-                                        if sentence_mulaw:
-                                            if not first_audio_dispatched:
-                                                first_audio_dispatched = True
-                                                total_latency = round((time.time() - t_turn_start) * 1000)
-                                                logger.info(f"[SarvamTelephony] >> Ultra-fast Time To First Audio: {total_latency}ms! <<")
-                                            await play_audio_task(sentence_mulaw)
-
-                                current_playback_task = asyncio.create_task(stream_conversation_turn())
-                                await current_playback_task
-
-                                full_reply = " ".join(full_reply_chunks).strip()
-                                if not full_reply:
-                                    full_reply = "जी, बताइए मैं आपकी कैसे सहायता कर सकता हूँ?"
-                                logger.info(f"[SarvamTelephony] Full agent response: '{full_reply}'")
-                                conversation_history.append({"role": "assistant", "content": full_reply})
-
-                                # Persist assistant transcript segment
-                                async with AsyncSessionLocal() as session:
-                                    stmt = select(Transcript).where(Transcript.call_id == call_id)
-                                    tr = (await session.execute(stmt)).scalar_one_or_none()
-                                    if tr:
-                                        session.add(
-                                            TranscriptSegment(
-                                                transcript_id=tr.id,
-                                                speaker="agent",
-                                                text=full_reply,
-                                                start_time=round(now - call_start_time, 2),
-                                                end_time=round(time.time() - call_start_time, 2),
-                                                sequence=sequence_counter,
-                                                confidence=1.0,
-                                            )
-                                        )
-                                        await session.commit()
-                                sequence_counter += 1
-
-                                # Check if agent concluded call
-                                if any(w in full_reply for w in ["धन्यवाद", "अलविदा", "नमस्कार", "bye"]):
-                                    if any(w in user_text for w in ["नहीं", "bye", "रखो", "काटो", "नो", "no", "ना"]):
-                                        logger.info("[SarvamTelephony] Natural conversational wrap-up concluded.")
-                                        await asyncio.sleep(1.2)
-                                        try:
-                                            from app.services.telephony_service import telephony_service
-                                            uuid_to_hangup = carrier_call_uuid or stream_id
-                                            if uuid_to_hangup:
-                                                await telephony_service.hangup_live_telephony_call(
-                                                    call_uuid=uuid_to_hangup,
-                                                    auth_id=carrier_auth_id,
-                                                    auth_token=carrier_auth_token,
-                                                )
-                                        except Exception:
-                                            pass
-                                        break
+                            # Launch turn processing task asynchronously to keep WebSocket loop 100% unblocked!
+                            current_turn_task = asyncio.create_task(
+                                process_caller_turn(user_audio, t_start, t_end)
+                            )
 
                 elif event in ("stop", "hangup", "disconnect"):
                     logger.info(f"[SarvamTelephony] Call end event received from VoBiz: {event}")
@@ -879,8 +960,8 @@ class SarvamTelephonyService:
         except Exception as e:
             logger.error(f"[SarvamTelephony] WebSocket error during call {call_id}: {e}", exc_info=True)
         finally:
-            if current_playback_task and not current_playback_task.done():
-                current_playback_task.cancel()
+            if current_turn_task and not current_turn_task.done():
+                current_turn_task.cancel()
 
             # Safeguard: ensure live phone call is disconnected on carrier side
             try:

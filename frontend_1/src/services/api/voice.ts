@@ -69,6 +69,27 @@ export const voiceApi = {
     const res = await apiClient.post<SarvamTestResponse>('/api/voice/sarvam/test', data || {});
     return res.data;
   },
+
+  getTranscriptApiConfig: async (): Promise<TranscriptApiConfigResponse> => {
+    const res = await apiClient.get<TranscriptApiConfigResponse>('/api/voice/transcript-api/config');
+    return res.data;
+  },
+
+  saveTranscriptApiConfig: async (data: {
+    api_key: string;
+    model?: string;
+  }): Promise<{ success: boolean; message: string }> => {
+    const res = await apiClient.post<{ success: boolean; message: string }>('/api/voice/transcript-api/config', data);
+    return res.data;
+  },
+
+  testTranscriptApiConnection: async (data?: {
+    api_key?: string;
+    model?: string;
+  }): Promise<TranscriptApiTestResponse> => {
+    const res = await apiClient.post<TranscriptApiTestResponse>('/api/voice/transcript-api/test', data || {});
+    return res.data;
+  },
 };
 
 export interface SarvamConfigResponse {
@@ -92,5 +113,33 @@ export interface SarvamTestResponse {
   speaker?: string;
   request_id?: string;
   has_audio?: boolean;
+}
+
+export interface TranscriptApiModelItem {
+  id: string;
+  name: string;
+  latency?: string;
+}
+
+export interface TranscriptApiConfigResponse {
+  success: boolean;
+  provider: string;
+  provider_name: string;
+  api_key: string;
+  masked_api_key: string;
+  model: string;
+  is_configured: boolean;
+  available_models: TranscriptApiModelItem[];
+  stt_engine: string;
+}
+
+export interface TranscriptApiTestResponse {
+  success: boolean;
+  connected: boolean;
+  status: string;
+  message: string;
+  latency_ms?: number;
+  model?: string;
+  available_models_count?: number;
 }
 

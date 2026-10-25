@@ -252,6 +252,111 @@ async def test_sarvam_connection(req: Optional[dict] = None):
         }
 
 
+# -------------------------------------------------------------
+# Transcript API & Google Gemini Configuration Endpoints
+# -------------------------------------------------------------
+@router.get("/transcript-api/config")
+async def get_transcript_api_config():
+    """
+    Returns current Transcript API and Google Gemini model configuration status.
+    """
+    import os
+    key = getattr(settings, "GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "") or ""
+    masked = f"{key[:6]}...{key[-4:]}" if len(key) > 10 else (key or "Not configured")
+    model = getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash")
+    return {
+        "success": True,
+        "provider": "google_gemini",
+        "provider_name": "Google Gemini AI",
+        "api_key": key,
+        "masked_api_key": masked,
+        "model": model,
+        "is_configured": bool(key and len(key) > 8),
+        "available_models": [
+            {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash (Ultra-Fast & Recommended)", "latency": "Ultra-Low"},
+            {"id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro (Deep Reasoning & Complex Nuances)", "latency": "Low-Medium"},
+            {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash (Standard Fast)", "latency": "Low"},
+            {"id": "gemini-3.1-flash-lite", "name": "Gemini 3.1 Flash Lite", "latency": "Ultra-Low"},
+        ],
+        "stt_engine": getattr(settings, "SARVAM_STT_MODEL", "saaras:v3"),
+    }
+
+
+@router.post("/transcript-api/config")
+async def update_transcript_api_config(req: dict):
+    """
+    Updates and persists Google Gemini / Transcript API credentials in real-time.
+    """
+    from app.config import save_transcript_api_credentials
+
+    api_key = (req.get("api_key") or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Gemini / Transcript API key cannot be empty")
+
+    model = (req.get("model") or "gemini-2.5-flash").strip()
+    save_transcript_api_credentials(gemini_api_key=api_key, gemini_model=model)
+
+    return {
+        "success": True,
+        "message": "Transcript API credentials updated and persisted successfully. Active in real-time without restart.",
+        "api_key": api_key,
+        "model": model,
+    }
+
+
+@router.post("/transcript-api/test")
+async def test_transcript_api_connection(req: Optional[dict] = None):
+    """
+    Tests live connection to Google Gemini API using configured or provided API key.
+    """
+    import os
+    api_key = (req or {}).get("api_key") or getattr(settings, "GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "") or ""
+    if not api_key:
+        raise HTTPException(status_code=400, detail="No Gemini API key provided to test.")
+
+    model = (req or {}).get("model") or getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash")
+    m_clean = model if not model.startswith("models/") else model.split("/")[-1]
+
+    t0 = time.time()
+    try:
+        # First verify models list with the key
+        models_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            list_resp = await client.get(models_url)
+            latency_ms = round((time.time() - t0) * 1000)
+            if list_resp.status_code == 200:
+                models_data = list_resp.json()
+                models_list = [m.get("name", "").replace("models/", "") for m in models_data.get("models", [])]
+                return {
+                    "success": True,
+                    "connected": True,
+                    "status": "CONNECTED",
+                    "latency_ms": latency_ms,
+                    "model": m_clean,
+                    "available_models_count": len(models_list),
+                    "message": f"Google Gemini API verified successfully! ({latency_ms}ms response time). Live transcript intelligence ready.",
+                }
+            error_data = {}
+            try:
+                error_data = list_resp.json()
+            except Exception:
+                pass
+            msg = error_data.get("error", {}).get("message") if isinstance(error_data, dict) else list_resp.text
+            return {
+                "success": False,
+                "connected": False,
+                "status": f"HTTP {list_resp.status_code}",
+                "message": f"Google API error: {msg}",
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "connected": False,
+            "status": "NETWORK_ERROR",
+            "message": f"Could not connect to Google Gemini API: {str(e)}",
+        }
+
+
 
 # -------------------------------------------------------------
 # Local Voice Testing (Zero Internet / Laptop Offline Mode)

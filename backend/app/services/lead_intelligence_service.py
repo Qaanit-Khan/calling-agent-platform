@@ -72,13 +72,15 @@ class LeadIntelligenceService:
             return None
 
         # Fast, low-latency, resilient model hierarchy
-        configured_model = getattr(settings, "GEMINI_MODEL", "gemini-3.1-flash-lite")
+        configured_model = getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash")
         candidate_models = list(dict.fromkeys([
             configured_model,
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-1.5-flash",
             "gemini-3.1-flash-lite",
             "gemini-3.5-flash-lite",
             "gemini-flash-lite-latest",
-            "gemini-3.5-flash",
         ]))
 
         prompt = f"""You are a specialized Lead Interest Intelligence analyzer for enterprise sales and support telephony calls.
@@ -125,16 +127,16 @@ Return ONLY a valid JSON object with these exact keys:
             m_clean = model_name if not model_name.startswith("models/") else model_name.split("/")[-1]
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_clean}:generateContent?key={gemini_key}"
             try:
+                gen_config = {
+                    "responseMimeType": "application/json",
+                    "temperature": 0.1,
+                }
                 async with httpx.AsyncClient(timeout=25.0) as client:
                     resp = await client.post(
                         url,
                         json={
                             "contents": [{"parts": [{"text": prompt}]}],
-                            "generationConfig": {
-                                "responseMimeType": "application/json",
-                                "temperature": 0.1,
-                                "thinkingConfig": {"thinkingBudget": 0},
-                            },
+                            "generationConfig": gen_config,
                         },
                     )
                     if resp.status_code == 200:

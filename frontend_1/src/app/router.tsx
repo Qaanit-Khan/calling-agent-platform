@@ -49,6 +49,7 @@ export const router = createBrowserRouter([
       { path: 'settings/models', element: <ModelConfigPage /> },
       { path: 'settings/health', element: <HealthPage /> },
       { path: 'settings/telephony', element: <SettingsPage initialTab="telephony" /> },
+      { path: 'settings/transcript', element: <SettingsPage initialTab="transcript" /> },
       { path: 'settings', element: <SettingsPage /> },
       { path: '*', element: <Navigate to="/" replace /> },
     ],

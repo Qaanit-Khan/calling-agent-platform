@@ -1,326 +1,283 @@
-# 📞 AI Calling Agent — Enterprise Telephony & Conversational Voice AI Platform
+# 📞 ARB SoftTech AI Calling Agent Platform — Client Handover & Setup Guide
 
-An enterprise-ready **Autonomous AI Outbound Calling & Lead Qualification Platform** powered by **Sarvam AI**, **FastAPI**, and **React**. Designed for high-volume automated outbound calls, real-time natural language speech interactions, multilingual intent classification, and seamless telephony integrations (VoBiz, Twilio).
+Welcome to the **Autonomous AI Outbound Calling & Lead Intelligence Platform**! This repository contains the complete full-stack enterprise calling agent powered by **FastAPI**, **React (Vite + TypeScript)**, **Sarvam AI (TTS/STT)**, **VoBiz / Twilio Telephony**, and **Google Gemini (Transcript Intelligence)**.
 
----
-
-## 🌟 Key Features
-
-- 🎙️ **Real-time Conversational Voice AI**: Sub-second latency Speech-to-Text (STT) and expressive Text-to-Speech (TTS) using native Sarvam AI models (`saaras:v3` & `bulbul:v2`).
-- 🌐 **Multilingual & Indic Language Support**: Fluent interactions in English, Hindi, and regional Indic languages with natural Hinglish code-switching.
-- 🧠 **5-Class Customer Intent Classifier**: Proprietary intent engine classifying customer responses into:
-  - `Interested` (Lead conversion)
-  - `Callback Requested` (Auto-scheduled follow-up)
-  - `Not Interested`
-  - `Do Not Disturb (DND)`
-  - `Voicemail / Answering Machine`
-- 📱 **Telephony Integrations**: Plug-and-play outbound telephony via **VoBiz** and **Twilio** with webhook event handling.
-- 📊 **Modern Web Dashboard**: High-performance React (Vite + TypeScript + Tailwind) admin UI for campaign management, call logs, analytics, and contact management.
-- 💾 **Dual Database Support**: Zero-configuration local SQLite for rapid prototyping and enterprise PostgreSQL for high-scale production.
-- 🔄 **Automated Workflows**: Campaign scheduling, disposition tagging, post-call summary generation, and recording storage.
+This document is the **official, end-to-end setup and handover guide** designed so that any client or developer can set up and run this entire platform on their computer from scratch in under 10 minutes.
 
 ---
 
-## 🏗️ Architecture Overview
+## 📑 Table of Contents
+
+1. [Architecture & How It Works](#1-architecture--how-it-works)
+2. [Software Prerequisites (Install on Client Laptop)](#2-software-prerequisites-install-on-client-laptop)
+3. [How to Install & Configure Docker Desktop](#3-how-to-install--configure-docker-desktop)
+4. [How to Get Code from GitHub (Client Setup)](#4-how-to-get-code-from-github-client-setup)
+5. [Environment Variables Configuration (.env)](#5-environment-variables-configuration-env)
+6. [Installing Dependencies (Backend & Frontend)](#6-installing-dependencies-backend--frontend)
+7. [Starting the Platform (2 Ways: 1-Click vs Docker)](#7-starting-the-platform-2-ways-1-click-vs-docker)
+8. [Verifying Setup & Testing a Live Call](#8-verifying-setup--testing-a-live-call)
+9. [Troubleshooting & FAQs](#9-troubleshooting--faqs)
+
+---
+
+## 1. Architecture & How It Works
 
 ```mermaid
 graph TD
-    A[Admin Dashboard - React Vite] -->|REST API| B[FastAPI Backend - Port 8001]
-    B -->|Database| C[(SQLite / PostgreSQL)]
-    B -->|Voice STT / TTS & LLM| D[Sarvam AI / Gemini Engine]
-    B -->|Telephony Webhooks & Outbound| E[VoBiz / Twilio Telephony]
-    E -->|PSTN Network| F[Customer Phone]
+    UI[🖥️ React Admin Dashboard\nhttp://localhost:5173] -->|REST & WebSockets| API[⚙️ FastAPI Backend\nhttp://localhost:8001]
+    API -->|SQLite / PostgreSQL| DB[(🗄️ Database\ncalling_agent.db)]
+    API -->|Real-time STT / TTS| Sarvam[🎙️ Sarvam AI Engine\nSaaras v3 / Bulbul v3]
+    API -->|Transcript Lead Intel| Gemini[🧠 Google Gemini AI\nIntent & Qualification]
+    API <-->|PSTN Bidirectional Audio Stream| Carrier[📞 VoBiz / Twilio Telephony]
+    Carrier <-->|Phone Call| Phone[📱 Customer Phone]
 ```
 
 ---
 
-## 📁 Repository Structure
+## 2. Software Prerequisites (Install on Client Laptop)
 
-```text
-├── backend/                  # FastAPI Application
-│   ├── app/
-│   │   ├── api/              # REST Endpoints (calls, campaigns, agents, businesses)
-│   │   ├── models/           # SQLAlchemy Database Entities
-│   │   ├── schemas/          # Pydantic Schemas & DTOs
-│   │   ├── services/         # Business Logic, Telephony & Voice Engines
-│   │   └── config.py         # App Configuration & Environment Settings
-│   ├── alembic/              # Database Migrations
-│   ├── scripts/              # Utility & maintenance scripts
-│   ├── requirements.txt      # Python Dependencies
-│   └── .env.example          # Backend Environment Template
-│
-├── frontend_1/               # React + Vite + TypeScript Dashboard
-│   ├── src/
-│   │   ├── components/       # Reusable UI Components
-│   │   ├── features/         # Feature modules (Campaigns, Leads, Analytics)
-│   │   └── services/         # Axios API Client
-│   ├── package.json          # Node Dependencies
-│   └── .env.example          # Frontend Environment Template
-│
-├── model/                    # Multilingual Intent Classification Engine
-│   ├── classifier/           # Engine, Parsers, Lexicons, and Context Analyzers
-│   └── tests/                # Test suites & evaluation datasets
-│
-├── dograh/                   # Optional Voice Workflow Infrastructure & Docker Compose
-├── docker-compose.yml        # Multi-container orchestration (Redis, MinIO, DB)
-├── start_all.bat             # One-click Windows startup script
-└── README.md                 # Project Documentation
+Before setting up the project, install these software tools on your laptop (Windows 10/11 recommended):
+
+| # | Software | Recommended Version | Download Link | Purpose |
+| :-: | :--- | :--- | :--- | :--- |
+| **1** | **Git** | Latest | [git-scm.com/download/win](https://git-scm.com/download/win) | Code clone & version management |
+| **2** | **Python** | `3.11` or `3.12` | [python.org/downloads](https://www.python.org/downloads/) | FastAPI backend execution |
+| **3** | **Node.js** | `v20.x LTS` or `v22.x` | [nodejs.org/en/download](https://nodejs.org/) | React Frontend compilation |
+| **4** | **Docker Desktop** | Latest | [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) | Optional container stack (MinIO / Postgres) |
+| **5** | **Ngrok** | Latest | [ngrok.com/download](https://ngrok.com/download) | Public URL for live phone webhooks |
+
+> [!IMPORTANT]
+> **When installing Python**: Check the box **"Add python.exe to PATH"** on the very first installer screen! Without this, Python commands will not work in the terminal.
+
+---
+
+## 3. How to Install & Configure Docker Desktop
+
+If you plan to run containerized services or production MinIO storage, install Docker Desktop:
+
+### Step 3.1: Download & Install
+1. Download installer from [Docker Desktop for Windows](https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe).
+2. Run the `.exe` file.
+3. Make sure **"Use WSL 2 instead of Hyper-V (recommended)"** is **checked**.
+4. Click **OK**, wait for files to extract, and **restart your laptop** when prompted.
+
+### Step 3.2: Enable WSL 2 (If Prompted on First Launch)
+If Docker Desktop shows `WSL 2 installation is incomplete`, open **PowerShell as Administrator** and run:
+```powershell
+wsl --update
+wsl --set-default-version 2
 ```
 
----
-
-## ⚙️ Prerequisites
-
-Before setting up the project, ensure your environment meets the following requirements:
-
-- **Python**: Version `3.11` or `3.12`
-- **Node.js**: Version `18.x` or higher (with `npm`)
-- **Git**: Installed and configured
-- **Telephony Account**: Active credentials for [VoBiz](https://vobiz.ai) or [Twilio](https://twilio.com)
-- **Sarvam AI Account**: API Key from [Sarvam AI](https://www.sarvam.ai)
-- **Public URL / Tunnel**: [Ngrok](https://ngrok.com) or a static domain for telephony webhooks
+### Step 3.3: Verify Docker Installation
+Open PowerShell or Command Prompt and test:
+```powershell
+docker --version
+docker compose version
+```
+*(Both should return their respective version numbers without errors).*
 
 ---
 
-## 🐳 Does This Project Need Docker? (Architectural Comparison)
+## 4. How to Get Code from GitHub (Client Setup)
 
-This repository provides **two flexible deployment modes** to match your infrastructure requirements:
+### Step 4.1: Giving Access to the Client (By Repo Owner)
+If the repository is **Private**:
+1. Open GitHub: `https://github.com/Qaanit-Khan/calling-agent-platform`
+2. Go to **Settings** ➔ **Collaborators** ➔ Click **Add people**.
+3. Enter client's GitHub username or email and send the invitation.
+4. Client accepts the invitation from their email or GitHub notifications.
 
-| Feature / Mode | ⚡ Mode 1: Native Sarvam AI Mode (Recommended) | 🐳 Mode 2: Docker Infrastructure Mode |
-| :--- | :--- | :--- |
-| **Docker Required?** | ❌ **No Docker Needed (Zero Docker)** | ✅ **Yes (Requires Docker Desktop)** |
-| **Setup Complexity** | Zero configuration — runs in 2 minutes | Multi-container Docker orchestration |
-| **Speech Engine** | Native **Sarvam AI** (`saaras:v3` STT & `bulbul:v2` TTS) | Dograh Voice Engine + Pipecat |
-| **Database** | Lightweight local SQLite (`calling_agent.db`) | Containerized PostgreSQL (`port 5433`) |
-| **Audio Storage** | Local disk storage (`backend/app/recordings/`) | MinIO S3 Object Storage (`ports 9000/9001`) |
-| **Background Queue**| Built-in async event loop | Containerized Redis (`port 6379`) |
-| **Launch Command** | Double-click `start_all.bat` or run commands | `docker compose up -d` in `dograh/` |
-
-> [!TIP]
-> **Which one should you choose?**
-> - For fast testing, development, and standard production calling: **Use Mode 1 (Zero Docker)**. It connects directly to Sarvam AI and VoBiz with zero container overhead and lowest latency.
-> - For enterprise multi-tenant deployments requiring MinIO S3 audio storage, PostgreSQL clusters, and Redis caching: **Use Mode 2 (Docker Compose)**.
-
----
-
-## 🎯 Zero-to-Live-Calling Walkthrough (Step-by-Step)
-
-Follow this complete guide to make your first live AI outbound phone call:
-
-### Step 1: Clone the Repository
+### Step 4.2: Cloning to Client Computer
+Open **PowerShell** or **Git Bash** on the client laptop:
 ```bash
+# Choose folder where you want to keep the project
+cd C:\Projects
+
+# Clone the repository
 git clone https://github.com/Qaanit-Khan/calling-agent-platform.git
+
+# Enter the project folder
 cd calling-agent-platform
 ```
 
 ---
 
-### Step 2: Configure Backend Environment
-1. Enter the backend directory:
-   ```bash
-   cd backend
-   ```
-2. Create your `.env` file from `.env.example`:
-   ```bash
-   # Windows:
-   copy .env.example .env
-   # Linux / macOS:
-   cp .env.example .env
-   ```
-3. Open `backend/.env` and fill in your keys:
-   ```env
-   # Voice Engine & Sarvam AI Credentials
-   VOICE_ENGINE=sarvam
-   SARVAM_API_KEY=your_actual_sarvam_api_key_here
-   SARVAM_DEFAULT_VOICE=shubh
+## 5. Environment Variables Configuration (.env)
 
-   # VoBiz Telephony Provider Credentials
-   VOBIZ_AUTH_ID=your_vobiz_auth_id
-   VOBIZ_AUTH_TOKEN=your_vobiz_auth_token
-   VOBIZ_FROM_NUMBER=+91XXXXXXXXXX
-   ```
+Sensitive keys (API passwords, carrier secrets) are excluded from Git via `.gitignore`. You must create local `.env` files from templates.
 
----
-
-### Step 3: Install Backend & Frontend Dependencies
-1. **Backend**:
-   ```bash
-   # Windows PowerShell:
-   python -m venv .venv
-   .\.venv\Scripts\Activate.ps1
-   pip install -r requirements.txt
-   ```
-2. **Frontend**:
-   ```bash
-   cd ../frontend_1
-   copy .env.example .env
-   npm install
-   ```
-
----
-
-### Step 4: Start Ngrok Webhook Tunnel
-Telecom carriers (VoBiz / Twilio) require a public HTTPS URL to deliver audio stream events and call answers.
-
-Open a new terminal and run:
-```bash
-ngrok http 8001
-```
-Copy the forwarding URL (e.g. `https://your-tunnel.ngrok-free.dev`) and set it in `backend/.env`:
-```env
-BACKEND_PUBLIC_URL=https://your-tunnel.ngrok-free.dev
-```
-
----
-
-### Step 5: Launch All Services
-You can start everything in **one click** on Windows:
-- Double-click **`start_all.bat`** in the root folder.
-
-Or launch manually:
-- **Terminal 1 (Backend)**: `cd backend && uvicorn app.main:app --port 8001 --reload`
-- **Terminal 2 (Frontend)**: `cd frontend_1 && npm run dev`
-
----
-
-### Step 6: Trigger Your Outbound Phone Call
-1. Open the Web Dashboard in your browser: [http://localhost:5173](http://localhost:5173).
-2. Go to **Agents** and select or customize your voice agent (e.g. Admission Counseling, Broadband Support).
-3. Click **Quick Dial** (or go to **Calls** ➡️ **Initiate Call**).
-4. Enter the recipient mobile number (e.g., `+9198XXXXXXXX`).
-5. Click **Call Now**.
-6. The recipient's mobile phone will ring within 2-3 seconds!
-
----
-
-### 🛑 Intelligent Automatic Call Disconnection (Auto-Hangup)
-When the recipient declines or asks to conclude (e.g., saying *"नहीं चाहिए"*, *"कट कर दो"*, *"not interested"*, *"व्यस्त हूँ"*):
-1. **Instant Refusal Detection**: The platform identifies negative intent via `is_refusal_or_call_termination`.
-2. **Polite Farewell**: The agent immediately says: *"जी ठीक है, समय देने के लिए आपका बहुत धन्यवाद! नमस्कार।"*
-3. **PSTN Carrier Disconnect**: The platform automatically fires the VoBiz Carrier Hangup API, immediately terminating the phone call on the customer's device.
-4. **Authentic Two-Way Recording**: Both the customer's phone microphone audio and the agent's voice are mixed and saved directly in `backend/app/recordings/` for playback in the dashboard.
-
----
-
-## 🐳 Optional Mode 2: Launching with Docker Infrastructure
-
-If you wish to use PostgreSQL, Redis, MinIO S3, and Dograh infrastructure:
-1. Ensure **Docker Desktop** is running.
-2. In your terminal, run:
-   ```bash
-   cd dograh
-   docker compose up -d
-   ```
-3. This spins up:
-   - **PostgreSQL**: `localhost:5433` (`voxora`)
-   - **Redis**: `localhost:6379`
-   - **MinIO S3 Console**: [http://localhost:9001](http://localhost:9001) (`localhost:9000`)
-   - **Dograh Engine**: [http://localhost:8000](http://localhost:8000)
-   - **Dograh UI**: [http://localhost:3010](http://localhost:3010)
-```bash
-ngrok http 8001
-```
-Copy the generated forwarding URL (e.g., `https://your-domain.ngrok-free.dev`) and set it in your `backend/.env`:
-```env
-BACKEND_PUBLIC_URL=https://your-domain.ngrok-free.dev
-```
-
----
-
-## 🏃 Running the Application
-
-### Option 1: One-Click Launcher (Windows)
-Double-click `start_all.bat` in the root folder. It will automatically:
-1. Start the FastAPI backend on port `8001`.
-2. Start the Vite React frontend on port `5173`.
-3. Launch an ngrok tunnel on port `8001` (if ngrok is installed).
-
----
-
-### Option 2: Manual Startup
-
-**Terminal 1 — Backend API:**
+### 5.1: Backend Configuration
 ```bash
 cd backend
-# Activate venv first
-uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+copy .env.example .env
+```
+Open `backend/.env` in VS Code or Notepad and configure:
+
+```ini
+# ============================================================
+# Server & Public Webhook Settings
+# ============================================================
+BACKEND_HOST=0.0.0.0
+BACKEND_PORT=8001
+ENVIRONMENT=development
+# Your Ngrok HTTPS URL (e.g. https://your-subdomain.ngrok-free.dev)
+BACKEND_PUBLIC_URL=https://your-subdomain.ngrok-free.dev
+
+# ============================================================
+# Database Configuration (Zero-config local SQLite default)
+# ============================================================
+DATABASE_URL=sqlite+aiosqlite:///./calling_agent.db
+
+# ============================================================
+# Sarvam AI Voice & Speech Engine (TTS / STT)
+# ============================================================
+VOICE_ENGINE=sarvam
+ACTIVE_MODEL_MODE=sarvam
+SARVAM_API_KEY=your_sarvam_api_key_here
+SARVAM_DEFAULT_VOICE=shubh
+SARVAM_TTS_MODEL=bulbul:v3
+SARVAM_STT_MODEL=saaras:v3
+SARVAM_LLM_MODEL=sarvam-105b-conversations
+
+# ============================================================
+# Google Gemini (Transcript Intelligence & Scoring)
+# ============================================================
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-2.5-flash
+
+# ============================================================
+# VoBiz PSTN Telephony Carrier Credentials
+# ============================================================
+VOBIZ_AUTH_ID=your_vobiz_auth_id_here
+VOBIZ_AUTH_TOKEN=your_vobiz_auth_token_here
+VOBIZ_FROM_NUMBER=+9180XXXXXXXX
 ```
 
-**Terminal 2 — Frontend Dashboard:**
+### 5.2: Frontend Configuration
+```bash
+cd ../frontend_1
+copy .env.example .env
+```
+Ensure `frontend_1/.env` contains:
+```ini
+VITE_API_BASE_URL=http://localhost:8001
+```
+
+---
+
+## 6. Installing Dependencies (Backend & Frontend)
+
+### 6.1: Backend Virtual Environment Setup
+Open a terminal in `backend/`:
+```bash
+cd backend
+
+# 1. Create a dedicated Python virtual environment
+python -m venv .venv
+
+# 2. Activate the virtual environment
+# On Windows PowerShell:
+.\.venv\Scripts\Activate.ps1
+# (If execution policy error occurs, run: Set-ExecutionPolicy Unrestricted -Scope Process)
+# On Windows Command Prompt (CMD):
+.\.venv\Scripts\activate.bat
+
+# 3. Install all required dependencies
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 6.2: Frontend Node Modules Setup
+Open another terminal in `frontend_1/`:
 ```bash
 cd frontend_1
-npm run dev
+
+# Install Node dependencies
+npm install
 ```
 
 ---
 
-## 🌐 Default Ports & Access URLs
+## 7. Starting the Platform (2 Ways: 1-Click vs Docker)
 
-| Component | URL | Description |
-| :--- | :--- | :--- |
-| **Frontend Dashboard** | [http://localhost:5173](http://localhost:5173) | Main user interface (Campaigns, Analytics, Calls) |
-| **Interactive API Docs** | [http://localhost:8001/docs](http://localhost:8001/docs) | Swagger UI for backend API endpoints |
-| **Backend Health Check** | [http://localhost:8001/health](http://localhost:8001/health) | System health status endpoint |
+You have two easy choices for running the platform:
 
----
+### ⚡ Method A: 1-Click Native Mode (Recommended / Zero-Docker)
+*Fastest setup, zero container overhead, ultra-responsive.*
 
-## 🔐 Environment Variables Reference
-
-### Backend (`backend/.env`)
-
-| Variable | Required | Default | Description |
-| :--- | :---: | :--- | :--- |
-| `BACKEND_PORT` | No | `8001` | Port on which FastAPI server runs |
-| `BACKEND_PUBLIC_URL` | **Yes** | `http://localhost:8001` | Publicly accessible domain / tunnel for telephony webhooks |
-| `DATABASE_URL` | No | `sqlite+aiosqlite:///./calling_agent.db` | Database connection string (SQLite or PostgreSQL) |
-| `SARVAM_API_KEY` | **Yes** | — | Sarvam AI API key for Speech-to-Text & Text-to-Speech |
-| `SARVAM_DEFAULT_VOICE`| No | `meera` | Default TTS voice (`meera`, `pavithra`, `mahesh`, etc.) |
-| `VOBIZ_AUTH_ID` | Optional | — | VoBiz Account Authentication ID |
-| `VOBIZ_AUTH_TOKEN` | Optional | — | VoBiz Authentication Token |
-| `VOBIZ_FROM_NUMBER` | Optional | — | Verified Caller ID number registered with VoBiz |
-| `TWILIO_ACCOUNT_SID`| Optional | — | Twilio Account SID (if using Twilio provider) |
-| `TWILIO_AUTH_TOKEN` | Optional | — | Twilio Auth Token (if using Twilio provider) |
-| `TWILIO_PHONE_NUMBER`| Optional | — | Twilio phone number |
-| `GEMINI_API_KEY` | Optional | — | Google Gemini API key (fallback LLM) |
-
-### Frontend (`frontend_1/.env`)
-
-| Variable | Required | Default | Description |
-| :--- | :---: | :--- | :--- |
-| `VITE_API_BASE_URL` | **Yes** | `http://localhost:8001` | Base URL of the running FastAPI backend |
+1. In the project root folder, double-click **`start_all.bat`**.
+2. It automatically starts:
+   - **FastAPI Backend**: `http://localhost:8001`
+   - **React Dashboard**: `http://localhost:5173`
+   - **Ngrok Telephony Tunnel**: For VoBiz live telephone streams
+3. Open your browser at: **`http://localhost:5173`**!
 
 ---
 
-## 🧪 Testing the Intent Classifier
+### 🐳 Method B: Docker Stack Mode (Full Production)
+*Used when running MinIO S3 audio storage & PostgreSQL.*
 
-To test the multilingual interest classification engine independently:
-
+1. Ensure **Docker Desktop** is running.
+2. In the project root directory, run:
 ```bash
-cd model
-pytest tests/ -v
+docker compose up -d --build
+```
+3. Services:
+   - **React Dashboard**: `http://localhost:5174`
+   - **FastAPI Backend**: `http://localhost:8001`
+   - **API Documentation**: `http://localhost:8001/docs`
+   - **Health Endpoint**: `http://localhost:8001/health`
+
+---
+
+## 8. Verifying Setup & Testing a Live Call
+
+Follow this quick 4-step checklist to verify everything is operational:
+
+### Step 8.1: Check Health
+Open in browser: `http://localhost:8001/health`  
+Status should report `"status": "online"` with healthy database and voice AI engines.
+
+### Step 8.2: Verify Settings in Dashboard
+1. Open `http://localhost:5173/settings`.
+2. **Sarvam AI Tab**: Click **"Test Connection"** ➔ Shows `CONNECTED` (green).
+3. **VoBiz Telephony Tab**: Check that Carrier Auth ID & Token are saved.
+4. **Transcript API Tab**: Click **"Test Live Connection"** ➔ Verifies Google Gemini connectivity with response latency in milliseconds.
+
+### Step 8.3: Place an Outbound Test Call
+1. Click **AI Agents** in the sidebar.
+2. Choose an agent (e.g., *Customer Support Agent*).
+3. Click **Quick Call / Dial**, enter your mobile number (`+91XXXXXXXXXX`), and click **Call Now**.
+4. Your phone will ring! Answer and talk in Hindi, English, or Hinglish.
+5. Hang up and open **Calls History**:
+   - Verify the **complete live transcript** of what was spoken.
+   - Listen to the **authentic audio recording** via the embedded Audio Player.
+   - Check the **Lead Intelligence analysis** (Interested / Callback / Not Interested classification).
+
+---
+
+## 9. Troubleshooting & FAQs
+
+### Q1: Python command not found or 'venv' cannot be created?
+**Fix**: Ensure Python is added to your Windows PATH. Open Start Menu, search `Environment Variables`, click `Path`, and verify `C:\Python312` and `C:\Python312\Scripts` are present.
+
+### Q2: What if my Google Gemini API Key limit/quota expires?
+**Fix**: You do **not** need to touch the code or restart the server!
+1. Go to [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) and generate a new key in 1 click.
+2. Open `http://localhost:5173/settings?tab=transcript`.
+3. Paste the new key and click **Save & Update Key (Real-Time)**. It updates instantly in runtime memory and `.env`!
+
+### Q3: VoBiz phone call connects, but no audio?
+**Fix**: Check that your Ngrok tunnel is running and that `BACKEND_PUBLIC_URL` in `backend/.env` matches your active Ngrok URL (e.g. `https://your-ngrok.ngrok-free.dev`). VoBiz requires a public HTTPS URL to stream telephony audio packets.
+
+### Q4: Port 8001 or 5173 is already in use?
+**Fix**: Open Command Prompt and terminate the blocked process:
+```bash
+netstat -ano | findstr :8001
+taskkill /PID <PID_NUMBER> /F
 ```
 
 ---
 
-## 🛡️ Production Deployment Recommendations
-
-1. **Database**: Use managed **PostgreSQL** (AWS RDS, Supabase, or self-hosted) instead of SQLite.
-2. **Reverse Proxy & SSL**: Deploy behind **Nginx** or **Traefik** with valid SSL certificates (Let's Encrypt).
-3. **Process Manager**: Use **Docker Compose**, **Systemd**, or **PM2 / Gunicorn** with multiple Uvicorn workers for production scaling:
-   ```bash
-   gunicorn -w 4 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:8001
-   ```
-4. **Environment Security**: Keep production `.env` files in a secret manager or restricted server environment.
-
----
-
-## 🤝 Support & Handoff Checklist
-
-Before handing over to the client, verify that:
-- [x] Repository contains no `.env` files with active private secrets.
-- [x] `.env.example` files are present in both `backend/` and `frontend_1/`.
-- [x] Heavy media and database files (`*.wav`, `*.db`, `node_modules`) are excluded via `.gitignore`.
-- [x] Client has access to active accounts for Sarvam AI and their selected Telephony Provider (VoBiz/Twilio).
-- [x] Client repository is set to **Private** on GitHub.
-
-For questions or customized deployment assistance, please contact the development team.
+## 📄 License & Ownership
+Created for **ARB SoftTech Calling Agent Platform**. All source code, AI prompts, and models are fully configured for direct enterprise deployment.

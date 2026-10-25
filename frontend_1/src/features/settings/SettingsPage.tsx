@@ -15,15 +15,17 @@ import {
   ExternalLink,
   Radio,
   Phone,
+  FileText,
 } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { VoBizTelephonySettings } from './VoBizTelephonySettings';
 import { TwilioTelephonySettings } from './TwilioTelephonySettings';
 import { SarvamSettings } from './SarvamSettings';
+import { TranscriptApiSettings } from './TranscriptApiSettings';
 import { ModelModeSwitcher } from '../../components/ui/ModelModeSwitcher';
 
 interface SettingsPageProps {
-  initialTab?: 'sarvam' | 'telephony' | 'twilio' | 'workspace';
+  initialTab?: 'sarvam' | 'telephony' | 'twilio' | 'transcript' | 'workspace';
 }
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab }) => {
@@ -31,10 +33,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab }) => {
   const { isAuthenticated, openAuthModal, logout } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const validTabs: Array<'sarvam' | 'telephony' | 'twilio' | 'workspace'> = [
+  const validTabs: Array<'sarvam' | 'telephony' | 'twilio' | 'transcript' | 'workspace'> = [
     'sarvam',
     'telephony',
     'twilio',
+    'transcript',
     'workspace',
   ];
   const paramTab = searchParams.get('tab') as any;
@@ -42,9 +45,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab }) => {
     initialTab ||
     (validTabs.includes(paramTab) ? paramTab : 'sarvam');
 
-  const [activeTab, setActiveTab] = useState<'sarvam' | 'telephony' | 'twilio' | 'workspace'>(currentTab);
+  const [activeTab, setActiveTab] = useState<'sarvam' | 'telephony' | 'twilio' | 'transcript' | 'workspace'>(currentTab);
 
-  const handleTabChange = (tab: 'sarvam' | 'telephony' | 'twilio' | 'workspace') => {
+  const handleTabChange = (tab: 'sarvam' | 'telephony' | 'twilio' | 'transcript' | 'workspace') => {
     setActiveTab(tab);
     setSearchParams({ tab });
   };
@@ -96,6 +99,18 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab }) => {
         </button>
         <button
           type="button"
+          onClick={() => handleTabChange('transcript')}
+          className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${
+            activeTab === 'transcript'
+              ? 'bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-sm shadow-orange-500/20'
+              : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-zinc-800'
+          }`}
+        >
+          <FileText className="w-3.5 h-3.5" />
+          <span>Transcript API</span>
+        </button>
+        <button
+          type="button"
           onClick={() => handleTabChange('workspace')}
           className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
             activeTab === 'workspace'
@@ -115,6 +130,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ initialTab }) => {
       {activeTab === 'sarvam' && <SarvamSettings />}
       {activeTab === 'telephony' && <VoBizTelephonySettings />}
       {activeTab === 'twilio' && <TwilioTelephonySettings />}
+      {activeTab === 'transcript' && <TranscriptApiSettings />}
 
       {activeTab === 'workspace' && (
         <div className="space-y-6">
