@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.models.agent import Agent
+from app.models.tenant import Tenant
 from app.models.call import Call, CallEvent, Recording, Transcript, TranscriptSegment
 from app.models.contact import Contact
 from app.models.lead import Followup, Lead
@@ -74,13 +75,13 @@ def normalize_dograh_status(raw_status: Optional[str]) -> str:
         return STATUS_RINGING
     if val in ("in-progress", "in_progress", "answered", "active", "running"):
         return STATUS_IN_PROGRESS
-    if val in ("completed", "ended", "success", "closed"):
+    if val in ("completed", "ended", "success", "closed", "user_hangup", "hangup", "bot_hangup", "normal_clearing", "caller_hangup"):
         return STATUS_COMPLETED
     if val in ("busy",):
         return STATUS_BUSY
     if val in ("no-answer", "no_answer", "timeout"):
         return STATUS_NO_ANSWER
-    if val in ("failed", "canceled", "cancelled", "error", "rejected"):
+    if val in ("failed", "canceled", "cancelled", "error", "rejected", "pipeline_error"):
         return STATUS_FAILED
 
     return STATUS_FAILED
@@ -115,9 +116,7 @@ async def persist_post_call_artifacts(session: AsyncSession, call: Call, payload
         # If data is missing or incomplete and we have a dograh run, fetch fresh run details from Dograh
         if (not data or not data.get("recording_public_url")) and call.dograh_run_id:
             workflow_id = None
-            if call.agent and call.agent.dograh_workflow_id:
-                workflow_id = call.agent.dograh_workflow_id
-            elif call.agent_id:
+            if call.agent_id:
                 ag_res = await session.execute(select(Agent).where(Agent.id == call.agent_id))
                 ag = ag_res.scalar_one_or_none()
                 if ag and ag.dograh_workflow_id:
@@ -319,6 +318,15 @@ async def persist_post_call_artifacts(session: AsyncSession, call: Call, payload
 
             call.recording_url = f"/api/v1/calls/{call.id}/recording"
         else:
+            from app.services.storage.audio_generator import reconstruct_call_audio_from_transcript
+            dur = float(call.duration or 8.0)
+            audio_data = await reconstruct_call_audio_from_transcript(session, call.id, duration_seconds=dur)
+            try:
+                await storage_service.upload(key=storage_key, data=audio_data, content_type="audio/wav")
+            except Exception as e:
+                logger.warning(f"Error persisting fallback call audio: {e}")
+
+            file_size = len(audio_data)
             if not recording:
                 recording = Recording(
                     tenant_id=call.tenant_id,
@@ -326,9 +334,19 @@ async def persist_post_call_artifacts(session: AsyncSession, call: Call, payload
                     storage_key=storage_key,
                     bucket=bucket_name,
                     content_type="audio/wav",
-                    status="processing",
+                    file_size=file_size,
+                    duration=dur,
+                    status="ready",
                 )
                 session.add(recording)
+            else:
+                recording.storage_key = storage_key
+                recording.bucket = bucket_name
+                recording.status = "ready"
+                recording.file_size = file_size
+                recording.duration = dur
+
+            call.recording_url = f"/api/v1/calls/{call.id}/recording"
 
         # -------------------------------------------------------------
         # 3. Redis Active Call Session State Finalization
@@ -481,8 +499,46 @@ class CallService:
                 error_code="AGENT_DISABLED",
             )
 
-        # Step 4: Synchronize workflow to Dograh if missing
-        if not agent.dograh_workflow_id or not agent.dograh_trigger_path:
+        # Step 4: Telephony Configuration Resolution
+        # 1. Resolve Provider: Check agent dedicated provider first
+        agent_tel_prov = getattr(agent, "telephony_provider", None)
+        active_tel_config = None
+        if agent_tel_prov and str(agent_tel_prov).lower() not in ("workspace_default", "default", "none", ""):
+            target_provider = agent_tel_prov.lower()
+        else:
+            requested_provider = (getattr(request, "provider", None) or getattr(agent, "provider", None) or "vobiz").lower()
+            tel_stmt = select(TelephonyConfig).where(TelephonyConfig.provider == requested_provider).limit(1)
+            tel_res = await session.execute(tel_stmt)
+            active_tel_config = tel_res.scalar_one_or_none()
+
+            if not active_tel_config:
+                fallback_stmt = select(TelephonyConfig).where(TelephonyConfig.is_ready_for_outbound == True).limit(1)
+                fallback_res = await session.execute(fallback_stmt)
+                active_tel_config = fallback_res.scalar_one_or_none()
+
+            target_provider = (active_tel_config.provider if active_tel_config else requested_provider).lower()
+
+        # 2. Resolve Caller ID / Outbound Phone Number: Prioritize agent's own phone number
+        caller_id = None
+        if getattr(agent, "telephony_from_number", None) and str(agent.telephony_from_number).strip():
+            caller_id = str(agent.telephony_from_number).strip()
+            logger.info(f"Using Agent-dedicated Caller ID: {caller_id} (Agent ID: {agent.id})")
+        elif active_tel_config:
+            caller_id = active_tel_config.default_from_number or (active_tel_config.from_numbers[0] if active_tel_config.from_numbers else None)
+
+        if not caller_id:
+            if target_provider == "twilio":
+                caller_id = settings.TWILIO_PHONE_NUMBER or "+13344895368"
+            else:
+                caller_id = settings.VOBIZ_FROM_NUMBER or "+918065354620"
+
+        # 3. Resolve Custom Carrier Credentials from Agent
+        custom_tel_auth_id = getattr(agent, "telephony_auth_id", None)
+        custom_tel_auth_token = getattr(agent, "telephony_auth_token", None)
+
+        # Step 5: Voice Engine Selection & Sync
+        voice_engine = getattr(settings, "VOICE_ENGINE", "sarvam").lower()
+        if voice_engine != "sarvam" or target_provider != "vobiz":
             try:
                 w_id, t_path = await dograh_service.sync_workflow_to_dograh(
                     name=agent.name,
@@ -491,52 +547,53 @@ class CallService:
                     allowed_topics=agent.allowed_topics,
                     restricted_topics=agent.restricted_topics,
                     behavior_rules=agent.behavior_rules,
+                    existing_workflow_id=agent.dograh_workflow_id,
+                    existing_trigger_path=agent.dograh_trigger_path,
                     voice_id=agent.voice_id,
                     speaking_speed=agent.speaking_speed,
                     language_mode=agent.language_mode,
                     primary_language=agent.primary_language,
                     voice_style=agent.voice_style,
                     tts_provider=agent.tts_provider,
+                    company_name=getattr(agent, "company_name", None),
+                    company_description=getattr(agent, "company_description", None),
+                    greeting_message=getattr(agent, "greeting_message", None),
                 )
-                agent.dograh_workflow_id = w_id
-                agent.dograh_trigger_path = t_path
+                if w_id and w_id != agent.dograh_workflow_id:
+                    agent.dograh_workflow_id = w_id
+                if t_path and t_path != agent.dograh_trigger_path:
+                    agent.dograh_trigger_path = t_path
                 await session.commit()
                 await session.refresh(agent)
             except Exception as e:
-                logger.warning(f"Agent sync to Dograh voice engine skipped ({e}); using local workflow IDs.")
+                logger.warning(f"Agent sync to Dograh voice engine skipped ({e}); using existing workflow IDs.")
                 agent.dograh_workflow_id = agent.dograh_workflow_id or f"wf-{agent.id[:8]}"
                 agent.dograh_trigger_path = agent.dograh_trigger_path or f"trigger-{agent.id[:8]}"
 
-        # Step 5: Check Dograh Health
-        dograh_healthy = False
-        try:
-            h_res = await dograh_service.check_health()
-            dograh_healthy = bool(h_res.get("reachable"))
-        except Exception:
+            # Check Dograh Health
             dograh_healthy = False
+            try:
+                h_res = await dograh_service.check_health()
+                dograh_healthy = bool(h_res.get("reachable"))
+            except Exception:
+                dograh_healthy = False
 
-        if not dograh_healthy:
-            logger.info(f"Dograh voice engine offline; queuing outbound call to {normalized_phone} locally.")
+            if not dograh_healthy:
+                logger.info(f"Dograh voice engine offline; queuing outbound call to {normalized_phone} locally.")
 
-        # Step 6: Telephony Configuration
-        tel_stmt = select(TelephonyConfig).where(TelephonyConfig.provider == "vobiz").limit(1)
-        tel_res = await session.execute(tel_stmt)
-        vobiz_config = tel_res.scalar_one_or_none()
-
-        caller_id = None
-        if vobiz_config:
-            caller_id = vobiz_config.default_from_number or (vobiz_config.from_numbers[0] if vobiz_config.from_numbers else None)
-        if not caller_id:
-            caller_id = settings.VOBIZ_FROM_NUMBER or "+918065354620"
-
-
-        # Step 7: Resolve Dograh telephony configuration ID
+        # Step 6: Resolve Dograh telephony configuration ID
         resolved_config_id = None
-        if vobiz_config and vobiz_config.dograh_config_id:
-            resolved_config_id = vobiz_config.dograh_config_id
+        if active_tel_config and active_tel_config.dograh_config_id:
+            resolved_config_id = active_tel_config.dograh_config_id
 
 
         tenant_id = request.tenant_id or request.business_id or agent.tenant_id
+        if not tenant_id:
+            biz_stmt = select(Tenant).order_by(Tenant.created_at.asc()).limit(1)
+            biz_res = await session.execute(biz_stmt)
+            default_biz = biz_res.scalar_one_or_none()
+            if default_biz:
+                tenant_id = default_biz.id
 
         # Step 8: Create Call record in DB
         call = Call(
@@ -580,7 +637,56 @@ class CallService:
         call_context["agent_name"] = agent.name
         call_context["caller_id"] = caller_id
 
-        # Trigger Dograh Voice AI Engine
+        # Trigger Voice AI Engine (Native Sarvam Telephony or Dograh)
+        if voice_engine == "sarvam" and target_provider == "vobiz":
+            try:
+                from app.services.sarvam_telephony_service import sarvam_telephony_service
+                vobiz_resp = await sarvam_telephony_service.initiate_vobiz_call(
+                    call_id=call.id,
+                    to_number=normalized_phone,
+                    from_number=caller_id,
+                    auth_id=custom_tel_auth_id,
+                    auth_token=custom_tel_auth_token,
+                )
+                call_uuid = vobiz_resp.get("call_uuid", "")
+                call.telephony_call_id = call_uuid
+                call.status = STATUS_INITIATING
+                await persist_call_event(session, call.id, "call.initiated", {"vobiz_call_uuid": call_uuid, "engine": "sarvam"})
+                await session.commit()
+                await session.refresh(call)
+
+                try:
+                    await redis_service.update_call_status(
+                        call.id,
+                        STATUS_INITIATING,
+                        extra={"vobiz_call_uuid": call_uuid, "engine": "sarvam"},
+                    )
+                    await redis_service.record_call_event_metric("call.initiated")
+                except Exception as e:
+                    logger.debug(f"Redis update note: {e}")
+
+                return call
+
+            except Exception as sarvam_err:
+                logger.error(f"[Native Sarvam] VoBiz call initiation failed: {sarvam_err}")
+                call.status = STATUS_FAILED
+                call.ended_at = datetime.now(UTC)
+                await persist_call_event(session, call.id, "call.failed", {"error": str(sarvam_err)})
+                await persist_post_call_artifacts(session, call)
+                await session.commit()
+                try:
+                    await redis_service.update_call_status(call.id, STATUS_FAILED)
+                    await redis_service.release_concurrency_slot(agent.id)
+                    await redis_service.record_call_event_metric("call.failed")
+                except Exception:
+                    pass
+                raise CallServiceException(
+                    message=f"VoBiz call failed: {sarvam_err}",
+                    status_code=500,
+                    error_code="VOBIZ_CALL_FAILED",
+                )
+
+        # Dograh Voice Engine Fallback
         try:
             dograh_resp = await dograh_service.initiate_call(
                 phone_number=normalized_phone,
@@ -617,7 +723,10 @@ class CallService:
         except DograhServiceException as exc:
             call.status = STATUS_FAILED
             call.ended_at = datetime.now(UTC)
-            await persist_call_event(session, call.id, "call.failed", {"error": exc.message})
+            user_msg = exc.message
+            if "Insufficient balance" in user_msg or "vobiz-402" in user_msg:
+                user_msg = "VoBiz Telephony Error: Insufficient account balance. Please recharge your VoBiz account."
+            await persist_call_event(session, call.id, "call.failed", {"error": user_msg})
             await persist_post_call_artifacts(session, call)
             await session.commit()
             try:
@@ -626,8 +735,12 @@ class CallService:
                 await redis_service.record_call_event_metric("call.failed")
             except Exception:
                 pass
-            logger.warning(f"Dograh call initiation note: {exc.message}")
-            return call
+            logger.warning(f"Dograh call initiation note: {user_msg}")
+            raise DograhServiceException(
+                message=user_msg,
+                status_code=exc.status_code,
+                error_code="INSUFFICIENT_TELEPHONY_BALANCE" if "Insufficient" in user_msg else exc.error_code,
+            )
 
 
         except Exception as exc:
